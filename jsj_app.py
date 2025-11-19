@@ -289,8 +289,38 @@ with col_view:
     st.subheader("2. Lista Completa")
     if len(st.session_state.master_data) > 0:
         df = pd.DataFrame(st.session_state.master_data)
+        
+        # PAINEL DE REORDENAÇÃO POR TIPO
+        st.markdown("### 🔄 Reordenar por Tipo")
+        col_ordem1, col_ordem2 = st.columns([3, 1])
+        
+        with col_ordem1:
+            tipos_unicos = sorted(df['TIPO'].unique().tolist())
+            ordem_tipos = st.multiselect(
+                "Arrasta para reordenar a sequência de tipos",
+                options=tipos_unicos,
+                default=tipos_unicos,
+                help="A ordem escolhida será aplicada à tabela abaixo"
+            )
+        
+        with col_ordem2:
+            if st.button("✅ Aplicar Ordem", type="primary"):
+                if ordem_tipos:
+                    # Criar um mapeamento de ordem
+                    ordem_map = {tipo: idx for idx, tipo in enumerate(ordem_tipos)}
+                    df['_ordem'] = df['TIPO'].map(ordem_map)
+                    df = df.sort_values(by=['_ordem', 'Num. Desenho'])
+                    df = df.drop('_ordem', axis=1)
+                    st.session_state.master_data = df.to_dict('records')
+                    st.success("Ordem aplicada!")
+                    time.sleep(0.5)
+                    st.rerun()
+        
+        # Aplicar ordenação padrão se não houver ordem customizada
         if "Num. Desenho" in df.columns and "TIPO" in df.columns:
             df = df.sort_values(by=["TIPO", "Num. Desenho"])
+        
+        st.divider()
         
         st.dataframe(
             df, 
@@ -299,11 +329,52 @@ with col_view:
             hide_index=True
         )
         
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Lista Mestra JSJ')
-            writer.sheets['Lista Mestra JSJ'].set_column(0, 5, 20)
+        # BOTÕES DE EXPORTAÇÃO
+        st.markdown("### 📥 Exportar")
+        col_exp1, col_exp2 = st.columns(2)
+        
+        with col_exp1:
+            # Exportar XLSX
+            buffer_xlsx = io.BytesIO()
+            with pd.ExcelWriter(buffer_xlsx, engine='xlsxwriter') as writer:
+                df.to_excel(writer, index=False, sheet_name='Lista Mestra JSJ')
+                worksheet = writer.sheets['Lista Mestra JSJ']
+                worksheet.set_column(0, 0, 15)  # TIPO
+                worksheet.set_column(1, 1, 20)  # Num. Desenho
+                worksheet.set_column(2, 2, 40)  # Titulo
+                worksheet.set_column(3, 3, 10)  # Revisão
+                worksheet.set_column(4, 4, 12)  # Data
+                worksheet.set_column(5, 5, 30)  # Ficheiro
+                worksheet.set_column(6, 6, 25)  # Obs
             
-        st.download_button("📥 Descarregar Excel", data=buffer.getvalue(), file_name="lista_desenhos_jsj.xlsx", mime="application/vnd.ms-excel")
+            st.download_button(
+                "📊 Descarregar XLSX",
+                data=buffer_xlsx.getvalue(),
+                file_name="lista_desenhos_jsj.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
+        with col_exp2:
+            # Exportar Markdown
+            md_content = "# Lista de Desenhos JSJ\n\n"
+            
+            # Agrupar por TIPO
+            for tipo in df['TIPO'].unique():
+                df_tipo = df[df['TIPO'] == tipo]
+                md_content += f"## {tipo}\n\n"
+                md_content += "| Num. Desenho | Título | Rev | Data | Ficheiro | Obs |\n"
+                md_content += "|--------------|--------|-----|------|----------|-----|\n"
+                
+                for _, row in df_tipo.iterrows():
+                    md_content += f"| {row['Num. Desenho']} | {row['Titulo']} | {row['Revisão']} | {row['Data']} | {row['Ficheiro']} | {row['Obs']} |\n"
+                
+                md_content += "\n"
+            
+            st.download_button(
+                "📝 Descarregar MD",
+                data=md_content,
+                file_name="lista_desenhos_jsj.md",
+                mime="text/markdown"
+            )
     else:
         st.info("Define um 'Tipo' e carrega ficheiros.")
