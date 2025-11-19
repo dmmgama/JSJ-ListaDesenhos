@@ -5,3 +5,7 @@ openpyxl
 xlsxwriter
 google-generativeai
 watchdog
+ezdxf
+matplotlib
+pillow
+reportlab

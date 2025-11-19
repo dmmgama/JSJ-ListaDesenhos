@@ -8,6 +8,26 @@ import json
 import time
 import asyncio
 from collections import deque
+import tempfile
+import os
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from datetime import datetime
+
+try:
+    import ezdxf
+    from ezdxf.addons.drawing import RenderContext, Frontend
+    from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+    import matplotlib
+    matplotlib.use('Agg')  # Backend sem GUI
+    import matplotlib.pyplot as plt
+    DWG_SUPPORT = True
+except ImportError:
+    DWG_SUPPORT = False
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -120,6 +140,208 @@ def get_image_from_page(doc, page_num):
 
     return Image.open(io.BytesIO(img_data))
 
+def get_image_from_dwg_layout(dwg_path, layout_name):
+    """Extrai imagem de um layout específico de um ficheiro DWG."""
+    if not DWG_SUPPORT:
+        raise ImportError("ezdxf não está instalado. Instala com: pip install ezdxf matplotlib")
+    
+    try:
+        # Carregar o DWG/DXF
+        doc = ezdxf.readfile(dwg_path)
+        
+        # Obter o layout
+        if layout_name == 'Model':
+            msp = doc.modelspace()
+            layout = msp
+        else:
+            layout = doc.paperspace(layout_name)
+        
+        # Configurar figura com fundo branco
+        fig = plt.figure(figsize=(16, 12), dpi=200, facecolor='white')
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_facecolor('white')
+        
+        # Configurar contexto de renderização
+        ctx = RenderContext(doc)
+        out = MatplotlibBackend(ax)
+        
+        # Renderizar o layout
+        Frontend(ctx, out).draw_layout(layout, finalize=True)
+        
+        # Ajustar limites do gráfico
+        ax.autoscale()
+        ax.margins(0.05)
+        
+        # Converter para bytes
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight', dpi=200, facecolor='white')
+        buf.seek(0)
+        plt.close(fig)
+        
+        # Carregar imagem completa
+        img = Image.open(buf)
+        width, height = img.size
+        
+        # CROP: Quadrante inferior direito (50% x 50%)
+        crop_box = (
+            width // 2,      # left (50% da largura)
+            height // 2,     # top (50% da altura)
+            width,           # right (100%)
+            height           # bottom (100%)
+        )
+        
+        cropped = img.crop(crop_box)
+        
+        # Garantir que a imagem está em RGB
+        if cropped.mode != 'RGB':
+            cropped = cropped.convert('RGB')
+        
+        return cropped
+        
+    except Exception as e:
+        raise Exception(f"Erro ao processar DWG layout '{layout_name}': {str(e)}")
+
+def get_dwg_layouts(dwg_path):
+    """Retorna lista de nomes de layouts num ficheiro DWG."""
+    if not DWG_SUPPORT:
+        return []
+    
+    try:
+        doc = ezdxf.readfile(dwg_path)
+        
+        # Obter todos os paperspace layouts
+        paperspace_layouts = []
+        for layout in doc.layouts:
+            if layout.name != 'Model':
+                paperspace_layouts.append(layout.name)
+        
+        # Se não houver paperspace layouts, usar Model
+        if not paperspace_layouts:
+            return ['Model']
+        
+        return sorted(paperspace_layouts)
+        
+    except Exception as e:
+        # Em caso de erro, retorna lista vazia
+        return []
+
+def create_pdf_export(df):
+    """Cria PDF profissional com a lista de desenhos."""
+    buffer = io.BytesIO()
+    
+    # Configurar documento em landscape A4
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=1.5*cm,
+        leftMargin=1.5*cm,
+        topMargin=2*cm,
+        bottomMargin=2*cm
+    )
+    
+    # Estilos
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        textColor=colors.HexColor('#1f4788'),
+        spaceAfter=20,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    
+    subtitle_style = ParagraphStyle(
+        'CustomSubtitle',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.HexColor('#2c5aa0'),
+        spaceAfter=12,
+        spaceBefore=12,
+        fontName='Helvetica-Bold'
+    )
+    
+    # Elementos do documento
+    elements = []
+    
+    # Cabeçalho
+    elements.append(Paragraph("LISTA DE DESENHOS JSJ", title_style))
+    elements.append(Paragraph(f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}", styles['Normal']))
+    elements.append(Spacer(1, 0.5*cm))
+    
+    # Processar por tipo
+    for tipo in df['TIPO'].unique():
+        df_tipo = df[df['TIPO'] == tipo]
+        
+        # Subtítulo do tipo
+        elements.append(Paragraph(f"TIPO: {tipo}", subtitle_style))
+        elements.append(Spacer(1, 0.3*cm))
+        
+        # Preparar dados da tabela
+        table_data = [['Nº Desenho', 'Título', 'Rev', 'Data', 'Ficheiro', 'Obs']]
+        
+        for _, row in df_tipo.iterrows():
+            table_data.append([
+                str(row['Num. Desenho']),
+                str(row['Titulo'])[:50] + '...' if len(str(row['Titulo'])) > 50 else str(row['Titulo']),
+                str(row['Revisão']),
+                str(row['Data']),
+                str(row['Ficheiro'])[:30] + '...' if len(str(row['Ficheiro'])) > 30 else str(row['Ficheiro']),
+                str(row['Obs'])[:30] + '...' if len(str(row['Obs'])) > 30 else str(row['Obs'])
+            ])
+        
+        # Criar tabela
+        table = Table(table_data, colWidths=[3.5*cm, 6*cm, 1.5*cm, 2*cm, 5*cm, 4*cm])
+        
+        # Estilo da tabela
+        table.setStyle(TableStyle([
+            # Cabeçalho
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            
+            # Dados
+            ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+            ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+            ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+            ('ALIGN', (2, 1), (3, -1), 'CENTER'),  # Rev e Data centralizadas
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('TOPPADDING', (0, 1), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
+            
+            # Linhas alternadas
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f0f4f8')]),
+            
+            # Bordas
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')),
+            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#1f4788')),
+            
+            # Alinhamento vertical
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        
+        elements.append(table)
+        elements.append(Spacer(1, 0.8*cm))
+        
+        # Page break entre tipos (exceto último)
+        if tipo != df['TIPO'].unique()[-1]:
+            elements.append(PageBreak())
+    
+    # Rodapé
+    elements.append(Spacer(1, 1*cm))
+    footer_text = f"Total de desenhos: {len(df)} | Tipos: {', '.join(df['TIPO'].unique())}"
+    elements.append(Paragraph(footer_text, styles['Italic']))
+    
+    # Gerar PDF
+    doc.build(elements)
+    buffer.seek(0)
+    
+    return buffer
+
 async def ask_gemini_async(image, file_context, rate_limiter):
     """O Cérebro Assíncrono: Processa requests em paralelo com rate limiting."""
     if not api_key:
@@ -214,8 +436,22 @@ col_input, col_view = st.columns([1, 2])
 
 with col_input:
     st.subheader("1. Novo Lote")
-    batch_type = st.text_input("🏷️ Tipo deste lote", placeholder="Ex: BETAO, METALICA, PIL...", help="Aplica-se a todos os PDFs carregados agora.")
-    uploaded_files = st.file_uploader("📄 Carregar PDFs", type="pdf", accept_multiple_files=True)
+    batch_type = st.text_input("🏷️ Tipo deste lote", placeholder="Ex: BETAO, METALICA, PIL...", help="Aplica-se a todos os ficheiros carregados agora.")
+    
+    # Tipos de ficheiro suportados
+    file_types = ["pdf"]
+    if DWG_SUPPORT:
+        file_types.extend(["dwg", "dxf"])
+        st.caption("✅ Suporte DWG/DXF ativo")
+    else:
+        st.caption("⚠️ Instala ezdxf para suportar DWG: `pip install ezdxf matplotlib`")
+    
+    uploaded_files = st.file_uploader(
+        "📄 Carregar Ficheiros", 
+        type=file_types, 
+        accept_multiple_files=True,
+        help="Suporta PDF e DWG/DXF (cada layout = 1 desenho)"
+    )
     process_btn = st.button("⚡ Processar Lote", disabled=(not uploaded_files or not batch_type))
 
     if process_btn:
@@ -225,29 +461,81 @@ with col_input:
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # Pré-processamento: Extrair todas as páginas
+            # Pré-processamento: Extrair todas as páginas/layouts
             all_tasks = []
             total_operations = 0
             
-            for pdf_file in uploaded_files:
+            for file in uploaded_files:
+                file_ext = file.name.lower().split('.')[-1]
+                
                 try:
-                    bytes_data = pdf_file.read()
-                    doc = fitz.open(stream=bytes_data, filetype="pdf")
-                    
-                    for page_num in range(doc.page_count):
-                        display_name = f"{pdf_file.name} (Pág. {page_num + 1})"
-                        img = get_image_from_page(doc, page_num)
+                    if file_ext == 'pdf':
+                        # Processar PDF
+                        bytes_data = file.read()
+                        doc = fitz.open(stream=bytes_data, filetype="pdf")
                         
-                        all_tasks.append({
-                            "image": img,
-                            "display_name": display_name,
-                            "batch_type": batch_type.upper()
-                        })
-                        total_operations += 1
+                        for page_num in range(doc.page_count):
+                            display_name = f"{file.name} (Pág. {page_num + 1})"
+                            img = get_image_from_page(doc, page_num)
+                            
+                            all_tasks.append({
+                                "image": img,
+                                "display_name": display_name,
+                                "batch_type": batch_type.upper()
+                            })
+                            total_operations += 1
+                        
+                        doc.close()
+                        
+                    elif file_ext in ['dwg', 'dxf'] and DWG_SUPPORT:
+                        # Processar DWG/DXF
+                        status_text.text(f"A processar {file.name}...")
+                        
+                        # Guardar temporariamente (ezdxf precisa de ficheiro no disco)
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_ext}') as tmp:
+                            tmp.write(file.read())
+                            tmp_path = tmp.name
+                        
+                        try:
+                            # Obter layouts
+                            layouts = get_dwg_layouts(tmp_path)
+                            
+                            if not layouts:
+                                st.warning(f"⚠️ Nenhum layout encontrado em {file.name}")
+                                continue
+                            
+                            status_text.text(f"Encontrados {len(layouts)} layouts em {file.name}")
+                            
+                            for layout_idx, layout_name in enumerate(layouts):
+                                try:
+                                    display_name = f"{file.name} (Layout: {layout_name})"
+                                    status_text.text(f"A renderizar {display_name}...")
+                                    
+                                    img = get_image_from_dwg_layout(tmp_path, layout_name)
+                                    
+                                    all_tasks.append({
+                                        "image": img,
+                                        "display_name": display_name,
+                                        "batch_type": batch_type.upper()
+                                    })
+                                    total_operations += 1
+                                    
+                                except Exception as layout_error:
+                                    st.warning(f"⚠️ Erro no layout '{layout_name}' de {file.name}: {str(layout_error)}")
+                                    continue
+                                    
+                        except Exception as dwg_error:
+                            st.error(f"❌ Erro ao processar {file.name}: {str(dwg_error)}")
+                        finally:
+                            # Limpar ficheiro temporário
+                            try:
+                                if os.path.exists(tmp_path):
+                                    os.unlink(tmp_path)
+                            except:
+                                pass
                     
-                    doc.close()
                 except Exception as e:
-                    st.error(f"Erro ao ler {pdf_file.name}: {e}")
+                    st.error(f"Erro ao ler {file.name}: {e}")
             
             # Processamento Assíncrono em Paralelo
             async def process_all_pages():
@@ -380,7 +668,7 @@ with col_view:
         
         # BOTÕES DE EXPORTAÇÃO
         st.markdown("### 📥 Exportar")
-        col_exp1, col_exp2 = st.columns(2)
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
         
         with col_exp1:
             # Exportar XLSX
@@ -424,6 +712,17 @@ with col_view:
                 data=md_content,
                 file_name="lista_desenhos_jsj.md",
                 mime="text/markdown"
+            )
+        
+        with col_exp3:
+            # Exportar PDF
+            pdf_buffer = create_pdf_export(df)
+            
+            st.download_button(
+                "📄 Descarregar PDF",
+                data=pdf_buffer.getvalue(),
+                file_name="lista_desenhos_jsj.pdf",
+                mime="application/pdf"
             )
     else:
         st.info("Define um 'Tipo' e carrega ficheiros.")
