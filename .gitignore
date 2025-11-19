@@ -1,0 +1,16 @@
+# Ambientes Virtuais
+venv/
+env/
+.env
+
+# Python Cache
+__pycache__/
+*.py[cod]
+
+# Sistema
+.DS_Store
+JSJ-ListaDesenhos-ContextPack-v1.md
+check_api.py
+
+# Streamlit
+.streamlit/secrets.toml

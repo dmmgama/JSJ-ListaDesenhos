@@ -1,0 +1,7 @@
+streamlit
+pymupdf
+pandas
+openpyxl
+xlsxwriter
+google-generativeai
+watchdog
