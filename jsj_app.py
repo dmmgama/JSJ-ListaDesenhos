@@ -10,6 +10,8 @@ import asyncio
 from collections import deque
 import tempfile
 import os
+import logging
+import re
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
@@ -29,9 +31,105 @@ try:
 except ImportError:
     DWG_SUPPORT = False
 
+# --- CONFIGURAÇÃO DE LOGGING ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('jsj_parser.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# --- FUNÇÃO DE VALIDAÇÃO DE DADOS ---
+def validate_extracted_data(data, filename=""):
+    """Valida dados extraídos pela IA para garantir integridade.
+
+    Retorna: (is_valid: bool, errors: list, warnings: list)
+    """
+    errors = []
+    warnings = []
+
+    # 1. Validar número de desenho (obrigatório e não vazio)
+    num_desenho = data.get('num_desenho', '').strip()
+    if not num_desenho or num_desenho == 'ERRO':
+        errors.append("Número de desenho vazio ou inválido")
+    elif len(num_desenho) < 3:
+        warnings.append(f"Número de desenho muito curto: '{num_desenho}'")
+
+    # 2. Validar data (formato DD/MM/YYYY ou variações comuns)
+    data_str = data.get('data', '').strip()
+    if data_str:
+        # Aceitar formatos: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
+        date_patterns = [
+            r'^\d{2}[/\-\.]\d{2}[/\-\.]\d{4}$',  # DD/MM/YYYY
+            r'^\d{1}[/\-\.]\d{2}[/\-\.]\d{4}$',  # D/MM/YYYY
+            r'^\d{2}[/\-\.]\d{1}[/\-\.]\d{4}$',  # DD/M/YYYY
+        ]
+
+        if not any(re.match(pattern, data_str) for pattern in date_patterns):
+            # Verificar se não é placeholder comum
+            if data_str.lower() in ['n/d', 'n/a', '?', '??/??/????', 'ilegível']:
+                warnings.append(f"Data ilegível ou não disponível: '{data_str}'")
+            else:
+                errors.append(f"Formato de data inválido: '{data_str}' (esperado DD/MM/YYYY)")
+        else:
+            # Validar valores numéricos
+            parts = re.split(r'[/\-\.]', data_str)
+            if len(parts) == 3:
+                dia, mes, ano = parts
+                try:
+                    dia_int, mes_int, ano_int = int(dia), int(mes), int(ano)
+                    if not (1 <= dia_int <= 31):
+                        errors.append(f"Dia inválido: {dia_int}")
+                    if not (1 <= mes_int <= 12):
+                        errors.append(f"Mês inválido: {mes_int}")
+                    if not (2000 <= ano_int <= 2100):
+                        warnings.append(f"Ano fora do range esperado: {ano_int}")
+                except ValueError:
+                    errors.append(f"Data contém valores não numéricos: '{data_str}'")
+    else:
+        warnings.append("Data vazia")
+
+    # 3. Validar revisão (letra A-Z maiúscula ou '0' para primeira emissão)
+    revisao = data.get('revisao', '').strip()
+    if revisao:
+        if not re.match(r'^[A-Z0]$', revisao):
+            # Aceitar também minúsculas e converter
+            if re.match(r'^[a-z]$', revisao):
+                warnings.append(f"Revisão em minúscula: '{revisao}' (esperado maiúscula)")
+            else:
+                errors.append(f"Revisão inválida: '{revisao}' (esperado letra A-Z ou '0')")
+    else:
+        warnings.append("Revisão vazia")
+
+    # 4. Validar título (opcional mas recomendado)
+    titulo = data.get('titulo', '').strip()
+    if not titulo:
+        warnings.append("Título vazio")
+    elif len(titulo) < 3:
+        warnings.append(f"Título muito curto: '{titulo}'")
+
+    # 5. Verificar se há erro reportado pela própria IA
+    if 'error' in data:
+        errors.append(f"IA reportou erro: {data['error']}")
+
+    is_valid = len(errors) == 0
+
+    # Log de validação
+    if errors:
+        logger.error(f"Validação FALHOU para {filename}: {errors}")
+    if warnings:
+        logger.warning(f"Validação com avisos para {filename}: {warnings}")
+    if is_valid and not warnings:
+        logger.info(f"Validação OK para {filename}: Rev={revisao}, Data={data_str}")
+
+    return is_valid, errors, warnings
+
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="JSJ Parser v1",
+    page_title="JSJ Parser v2 (Unified)",
     page_icon="🏗️",
     layout="wide"
 )
@@ -48,6 +146,42 @@ if 'ordem_customizada' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Configuração")
     api_key = st.text_input("Google Gemini API Key", type="password")
+
+    # Modo TURBO (unifica jsj_app.py e jsjturbo.py)
+    turbo_mode = st.checkbox(
+        "🚀 Modo TURBO (Paid Tier)",
+        value=False,
+        help="Aumenta rate limit de 15 para 1000 req/min e batch size de 5 para 50. Requer conta Google Cloud paga."
+    )
+
+    if turbo_mode:
+        st.info("⚡ Modo TURBO ativo: 1000 req/min, batch 50")
+    else:
+        st.info("🐢 Modo Standard: 15 req/min, batch 5")
+
+    st.divider()
+
+    # Configuração de Crop (Prioridade 3)
+    st.subheader("✂️ Área de Crop")
+    crop_preset = st.selectbox(
+        "Posição da Legenda",
+        [
+            "Canto Inf. Direito (50%)",
+            "Canto Inf. Direito (30%)",
+            "Canto Inf. Direito (70%)",
+            "Metade Inferior (100% largura)",
+            "Página Inteira"
+        ],
+        index=0,
+        help="Define que parte da página será analisada pela IA"
+    )
+
+    # Mostrar preview do crop
+    show_crop_preview = st.checkbox(
+        "👁️ Mostrar preview do crop",
+        value=False,
+        help="Mostra a área que será analisada antes de processar"
+    )
 
     st.divider()
 
@@ -121,19 +255,54 @@ class RateLimiter:
         # Registra o novo request
         self.requests.append(now)
 
-def get_image_from_page(doc, page_num):
-    """Extrai a imagem (crop da legenda) de uma página específica do documento."""
-    page = doc.load_page(page_num)
+def get_crop_coordinates(preset, rect):
+    """Calcula as coordenadas de crop baseadas no preset selecionado.
 
-    # CROP OTIMIZADO: Quadrante inferior direito completo (50% x 50%)
-    # Captura a zona da legenda e tabela de revisões de forma mais abrangente
+    Args:
+        preset: String com o preset selecionado
+        rect: fitz.Rect da página
+
+    Returns:
+        tuple: (x_start_pct, y_start_pct, x_end_pct, y_end_pct) em percentagens
+    """
+    if preset == "Canto Inf. Direito (50%)":
+        return (0.50, 0.50, 1.0, 1.0)  # Quadrante inferior direito (padrão)
+    elif preset == "Canto Inf. Direito (30%)":
+        return (0.70, 0.70, 1.0, 1.0)  # Área menor, mais focada
+    elif preset == "Canto Inf. Direito (70%)":
+        return (0.30, 0.30, 1.0, 1.0)  # Área maior
+    elif preset == "Metade Inferior (100% largura)":
+        return (0.0, 0.50, 1.0, 1.0)  # Toda a metade inferior
+    elif preset == "Página Inteira":
+        return (0.0, 0.0, 1.0, 1.0)  # Página completa
+    else:
+        return (0.50, 0.50, 1.0, 1.0)  # Padrão
+
+def get_image_from_page(doc, page_num, crop_preset="Canto Inf. Direito (50%)"):
+    """Extrai a imagem (crop da legenda) de uma página específica do documento.
+
+    Args:
+        doc: Documento PyMuPDF
+        page_num: Número da página
+        crop_preset: Preset de crop selecionado
+
+    Returns:
+        PIL.Image: Imagem extraída
+    """
+    page = doc.load_page(page_num)
     rect = page.rect
+
+    # Calcular coordenadas do crop
+    x_start, y_start, x_end, y_end = get_crop_coordinates(crop_preset, rect)
+
     crop_rect = fitz.Rect(
-        rect.width * 0.50,   # Começa a 50% da largura (metade direita)
-        rect.height * 0.50,  # Começa a 50% da altura (metade inferior)
-        rect.width,
-        rect.height
+        rect.width * x_start,
+        rect.height * y_start,
+        rect.width * x_end,
+        rect.height * y_end
     )
+
+    logger.debug(f"Crop preset '{crop_preset}': ({x_start:.0%}, {y_start:.0%}) -> ({x_end:.0%}, {y_end:.0%})")
 
     pix = page.get_pixmap(clip=crop_rect, matrix=fitz.Matrix(2, 2)) # 2x zoom para clareza
     img_data = pix.tobytes("png")
@@ -342,21 +511,41 @@ def create_pdf_export(df):
     
     return buffer
 
-async def ask_gemini_async(image, file_context, rate_limiter):
-    """O Cérebro Assíncrono: Processa requests em paralelo com rate limiting."""
-    if not api_key:
-        return {"error": "Sem API Key"}
+async def ask_gemini_async(image, file_context, rate_limiter, api_key_param):
+    """O Cérebro Assíncrono: Processa requests em paralelo com rate limiting.
+
+    Args:
+        image: Imagem PIL para análise
+        file_context: Nome do ficheiro (para logging)
+        rate_limiter: Instância de RateLimiter
+        api_key_param: API key do Google Gemini
+
+    Returns:
+        dict: Dados extraídos pela IA
+    """
+    if not api_key_param:
+        logger.error("Tentativa de processar sem API Key")
+        return {"error": "Sem API Key", "num_desenho": "ERRO", "titulo": file_context, "revisao": "?", "data": "??/??/????", "obs": "API Key não fornecida"}, 0
 
     # Aguarda permissão do rate limiter
     await rate_limiter.acquire()
 
     # Executa a chamada síncrona da API em thread separada
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _ask_gemini_sync, image, file_context)
+    return await loop.run_in_executor(None, _ask_gemini_sync, image, file_context, api_key_param)
 
-def _ask_gemini_sync(image, file_context):
-    """Wrapper síncrono para chamada ao Gemini (executado em thread pool)."""
-    genai.configure(api_key=api_key)
+def _ask_gemini_sync(image, file_context, api_key_param):
+    """Wrapper síncrono para chamada ao Gemini (executado em thread pool).
+
+    Args:
+        image: Imagem PIL para análise
+        file_context: Nome do ficheiro (para logging)
+        api_key_param: API key do Google Gemini
+
+    Returns:
+        tuple: (dados_extraidos: dict, tokens_usados: int)
+    """
+    genai.configure(api_key=api_key_param)
 
     # LISTA DE MODELOS ATUALIZADA
     models_to_try = [
@@ -374,18 +563,18 @@ def _ask_gemini_sync(image, file_context):
     1. **IGNORA COMPLETAMENTE O NOME DO FICHEIRO.** Só olha para o que está DESENHADO/ESCRITO na imagem.
     2. Na LEGENDA (canto inferior direito), procura o campo "Nº DESENHO" ou "DESENHO Nº" ou similar.
     3. Extrai o NÚMERO DO DESENHO escrito nesse campo da legenda (ex: "2025-EST-001", "DIM-001", "PIL-2025-01").
-    
+
     4. **TABELA DE REVISÕES (CRUCIAL):**
        - Procura a tabela de revisões (geralmente acima da legenda, com colunas REV/DATA/DESCRIÇÃO ou similar)
        - Identifica TODAS as linhas preenchidas na tabela
        - A revisão MAIS RECENTE é aquela com a letra MAIS AVANÇADA alfabeticamente (ex: se existe A, B, C → a mais recente é C)
        - Extrai a DATA que está NESSA LINHA ESPECÍFICA da revisão mais recente
        - ATENÇÃO: NÃO uses a data base da legenda se houver revisões! Usa SEMPRE a data da linha da tabela!
-    
+
     5. **Se a tabela de revisões estiver completamente vazia ou não existir:**
        - Assume "1ª Emissão" (Rev 0)
        - Neste caso SIM, usa a data base que está na legenda principal
-    
+
     **EXEMPLO PRÁTICO:**
     - Tabela tem linhas: A (10/01/2025), B (15/02/2025), C (20/03/2025)
     - Revisão mais recente = "C"
@@ -402,30 +591,75 @@ def _ask_gemini_sync(image, file_context):
     """
 
     last_error = ""
+    last_model = ""
 
     # LOOP DE TENTATIVAS (ROBUST FALLBACK)
     for model_name in models_to_try:
         try:
+            logger.info(f"Tentando modelo {model_name} para {file_context}")
             model = genai.GenerativeModel(model_name)
             response = model.generate_content([prompt, image])
+            last_model = model_name
 
-            # Se chegou aqui, funcionou!
+            # Se chegou aqui, a chamada à API funcionou!
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
-            
+
             # Contabilizar tokens (estimativa)
             if hasattr(response, 'usage_metadata'):
                 total = response.usage_metadata.total_token_count
             else:
                 # Estimativa se não houver metadata: ~500 tokens por request
                 total = 500
-            
-            return json.loads(clean_text), total
+
+            # *** VALIDAÇÃO ROBUSTA DO JSON ***
+            try:
+                parsed_data = json.loads(clean_text)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON inválido retornado pela IA para {file_context}: {e}")
+                logger.debug(f"Resposta bruta: {clean_text[:200]}...")
+                return {
+                    "error": f"IA retornou JSON malformado: {str(e)}",
+                    "num_desenho": "ERRO_JSON",
+                    "titulo": file_context,
+                    "revisao": "?",
+                    "data": "??/??/????",
+                    "obs": f"Erro de parsing JSON: {str(e)}"
+                }, 0
+
+            # *** VALIDAÇÃO DE INTEGRIDADE DOS DADOS ***
+            is_valid, errors, warnings = validate_extracted_data(parsed_data, file_context)
+
+            if not is_valid:
+                # Dados inválidos - reportar mas não falhar completamente
+                logger.error(f"Dados inválidos extraídos de {file_context}: {errors}")
+                parsed_data['obs'] = f"VALIDAÇÃO FALHOU: {'; '.join(errors)}"
+                if warnings:
+                    parsed_data['obs'] += f" | Avisos: {'; '.join(warnings)}"
+            elif warnings:
+                # Dados válidos mas com avisos
+                if parsed_data.get('obs'):
+                    parsed_data['obs'] += f" | {'; '.join(warnings)}"
+                else:
+                    parsed_data['obs'] = '; '.join(warnings)
+
+            logger.info(f"Sucesso com modelo {model_name} para {file_context} ({total} tokens)")
+            return parsed_data, total
 
         except Exception as e:
             last_error = str(e)
+            logger.warning(f"Modelo {model_name} falhou para {file_context}: {last_error}")
             continue
 
-    return {"error": f"Falha IA. Último erro: {last_error}", "num_desenho": "ERRO", "titulo": file_context}, 0
+    # Se chegou aqui, todos os modelos falharam
+    logger.error(f"TODOS os modelos falharam para {file_context}. Último erro: {last_error}")
+    return {
+        "error": f"Falha IA. Último erro: {last_error}",
+        "num_desenho": "ERRO",
+        "titulo": file_context,
+        "revisao": "?",
+        "data": "??/??/????",
+        "obs": f"Todos os modelos falharam. Último modelo: {last_model or 'nenhum'}"
+    }, 0
 
 # --- INTERFACE PRINCIPAL (FRONTEND) ---
 
@@ -473,18 +707,25 @@ with col_input:
                         # Processar PDF
                         bytes_data = file.read()
                         doc = fitz.open(stream=bytes_data, filetype="pdf")
-                        
+
+                        # Preview do crop (se ativado e primeira página do primeiro ficheiro)
+                        if show_crop_preview and len(all_tasks) == 0 and doc.page_count > 0:
+                            preview_img = get_image_from_page(doc, 0, crop_preset)
+                            st.info(f"👁️ Preview da área de crop: {crop_preset}")
+                            st.image(preview_img, caption=f"Preview: {file.name} (Página 1)", width=400)
+                            st.caption("Esta é a área que a IA vai analisar em todas as páginas.")
+
                         for page_num in range(doc.page_count):
                             display_name = f"{file.name} (Pág. {page_num + 1})"
-                            img = get_image_from_page(doc, page_num)
-                            
+                            img = get_image_from_page(doc, page_num, crop_preset)
+
                             all_tasks.append({
                                 "image": img,
                                 "display_name": display_name,
                                 "batch_type": batch_type.upper()
                             })
                             total_operations += 1
-                        
+
                         doc.close()
                         
                     elif file_ext in ['dwg', 'dxf'] and DWG_SUPPORT:
@@ -531,7 +772,8 @@ with col_input:
                             try:
                                 if os.path.exists(tmp_path):
                                     os.unlink(tmp_path)
-                            except:
+                            except (FileNotFoundError, PermissionError, OSError) as e:
+                                logger.warning(f"Não foi possível eliminar ficheiro temporário {tmp_path}: {e}")
                                 pass
                     
                 except Exception as e:
@@ -540,22 +782,29 @@ with col_input:
             # Processamento Assíncrono em Paralelo
             async def process_all_pages():
                 """Processa todas as páginas em paralelo com rate limiting."""
-                rate_limiter = RateLimiter(max_requests=15, time_window=60)
+                # Configurar rate limiter e batch size baseado no modo
+                if turbo_mode:
+                    rate_limiter = RateLimiter(max_requests=1000, time_window=60)
+                    batch_size = 50
+                    logger.info("Modo TURBO ativo: 1000 req/min, batch 50")
+                else:
+                    rate_limiter = RateLimiter(max_requests=15, time_window=60)
+                    batch_size = 5
+                    logger.info("Modo Standard ativo: 15 req/min, batch 5")
+
                 new_records = []
-                
+
                 # Criar tasks assíncronas para todas as páginas
                 async_tasks = []
                 for task_data in all_tasks:
                     async_tasks.append(
                         ask_gemini_async(
-                            task_data["image"], 
+                            task_data["image"],
                             task_data["display_name"],
-                            rate_limiter
+                            rate_limiter,
+                            api_key
                         )
                     )
-                
-                # Processar em batches de 5 para não sobrecarregar
-                batch_size = 5
                 completed = 0
                 
                 for i in range(0, len(async_tasks), batch_size):

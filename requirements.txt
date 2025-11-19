@@ -1,11 +1,28 @@
-streamlit
-pymupdf
-pandas
-openpyxl
-xlsxwriter
-google-generativeai
-watchdog
-ezdxf
-matplotlib
-pillow
-reportlab
+# JSJ Parser - Gestor de Desenhos Técnicos
+# Versões pinadas para reprodutibilidade
+
+# Core Framework
+streamlit==1.31.1
+
+# PDF Processing
+pymupdf==1.23.26
+
+# Data Processing
+pandas==2.1.4
+
+# Excel Export
+xlsxwriter==3.1.9
+
+# Google Gemini AI
+google-generativeai==0.3.2
+
+# Image Processing
+pillow==10.2.0
+
+# PDF Export
+reportlab==4.0.9
+
+# Optional: CAD File Support (DWG/DXF)
+# Descomenta as linhas abaixo se precisares de suporte DWG/DXF
+# ezdxf==1.1.4
+# matplotlib==3.8.2
