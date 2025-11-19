@@ -380,27 +380,33 @@ def get_image_from_dwg_layout(dwg_path, layout_name):
         raise Exception(f"Erro ao processar DWG layout '{layout_name}': {str(e)}")
 
 def get_dwg_layouts(dwg_path):
-    """Retorna lista de nomes de layouts num ficheiro DWG."""
+    """Retorna lista de nomes de layouts Paper Space num ficheiro DWG.
+
+    Model Space é ignorado conforme Regra de Ouro #4 (Multi-Layout).
+    Retorna lista vazia se só existir Model Space.
+    """
     if not DWG_SUPPORT:
         return []
-    
+
     try:
         doc = ezdxf.readfile(dwg_path)
-        
-        # Obter todos os paperspace layouts
+
+        # Obter APENAS paperspace layouts (ignora Model Space)
         paperspace_layouts = []
         for layout in doc.layouts:
             if layout.name != 'Model':
                 paperspace_layouts.append(layout.name)
-        
-        # Se não houver paperspace layouts, usar Model
+
+        # Se não houver paperspace layouts, retorna VAZIO (não processar Model)
+        # O código chamador deve avisar o utilizador
         if not paperspace_layouts:
-            return ['Model']
-        
+            logger.warning(f"DWG sem Paper Space layouts: {dwg_path}")
+            return []
+
         return sorted(paperspace_layouts)
-        
+
     except Exception as e:
-        # Em caso de erro, retorna lista vazia
+        logger.error(f"Erro ao ler layouts DWG {dwg_path}: {e}")
         return []
 
 def create_pdf_export(df):
@@ -863,14 +869,15 @@ with col_input:
                             tmp_path = tmp.name
                         
                         try:
-                            # Obter layouts
+                            # Obter layouts (apenas Paper Space, Model Space é ignorado)
                             layouts = get_dwg_layouts(tmp_path)
-                            
+
                             if not layouts:
-                                st.warning(f"⚠️ Nenhum layout encontrado em {file.name}")
+                                st.warning(f"⚠️ **{file.name}**: Apenas contém Model Space. Desenhos devem estar em Paper Space (Layout1, Layout2, etc). Ficheiro ignorado.")
+                                logger.warning(f"DWG ignorado (só Model Space): {file.name}")
                                 continue
-                            
-                            status_text.text(f"Encontrados {len(layouts)} layouts em {file.name}")
+
+                            status_text.text(f"Encontrados {len(layouts)} Paper Space layouts em {file.name}")
                             
                             for layout_idx, layout_name in enumerate(layouts):
                                 try:
