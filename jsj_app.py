@@ -141,6 +141,12 @@ if 'total_tokens' not in st.session_state:
     st.session_state.total_tokens = 0
 if 'ordem_customizada' not in st.session_state:
     st.session_state.ordem_customizada = []
+if 'crop_validated' not in st.session_state:
+    st.session_state.crop_validated = False
+if 'pending_tasks' not in st.session_state:
+    st.session_state.pending_tasks = None
+if 'should_process' not in st.session_state:
+    st.session_state.should_process = False
 
 # --- BARRA LATERAL (CONFIGURAÇÃO) ---
 with st.sidebar:
@@ -167,6 +173,7 @@ with st.sidebar:
         "Posição da Legenda",
         [
             "Canto Inf. Direito (50%)",
+            "Canto Inf. Direito (40%)",
             "Canto Inf. Direito (30%)",
             "Canto Inf. Direito (70%)",
             "Metade Inferior (100% largura)",
@@ -178,9 +185,9 @@ with st.sidebar:
 
     # Mostrar preview do crop
     show_crop_preview = st.checkbox(
-        "👁️ Mostrar preview do crop",
+        "👁️ Validar crop antes de processar",
         value=False,
-        help="Mostra a área que será analisada antes de processar"
+        help="Mostra preview do crop para validação antes de processar (recomendado para primeiro uso)"
     )
 
     st.divider()
@@ -267,6 +274,8 @@ def get_crop_coordinates(preset, rect):
     """
     if preset == "Canto Inf. Direito (50%)":
         return (0.50, 0.50, 1.0, 1.0)  # Quadrante inferior direito (padrão)
+    elif preset == "Canto Inf. Direito (40%)":
+        return (0.60, 0.60, 1.0, 1.0)  # 40% da área (60% offset)
     elif preset == "Canto Inf. Direito (30%)":
         return (0.70, 0.70, 1.0, 1.0)  # Área menor, mais focada
     elif preset == "Canto Inf. Direito (70%)":
@@ -670,7 +679,33 @@ col_input, col_view = st.columns([1, 2])
 
 with col_input:
     st.subheader("1. Novo Lote")
-    batch_type = st.text_input("🏷️ Tipo deste lote", placeholder="Ex: BETAO, METALICA, PIL...", help="Aplica-se a todos os ficheiros carregados agora.")
+    
+    # Seletor de tipo com opções predefinidas
+    tipo_preset = st.selectbox(
+        "🏷️ Tipo de Desenho",
+        [
+            "Dimensionamento",
+            "Betão Armado - Lajes",
+            "Betão Armado - Pilares",
+            "Betão Armado - Fundações",
+            "Betão Armado - Vigas",
+            "Betão Armado - Núcleos",
+            "Pré-esforço",
+            "Custom (personalizado)"
+        ],
+        index=0,
+        help="Seleciona o tipo ou escolhe 'Custom' para inserir manualmente"
+    )
+    
+    # Input manual se "Custom" selecionado
+    if tipo_preset == "Custom (personalizado)":
+        batch_type = st.text_input(
+            "✏️ Tipo Personalizado", 
+            placeholder="Ex: METALICA, PORMENOR...",
+            help="Insere o tipo personalizado"
+        )
+    else:
+        batch_type = tipo_preset
     
     # Tipos de ficheiro suportados
     file_types = ["pdf"]
@@ -680,15 +715,79 @@ with col_input:
     else:
         st.caption("⚠️ Instala ezdxf para suportar DWG: `pip install ezdxf matplotlib`")
     
+    # Inicializar key do uploader se não existir
+    if 'uploader_key' not in st.session_state:
+        st.session_state.uploader_key = 0
+    
     uploaded_files = st.file_uploader(
         "📄 Carregar Ficheiros", 
         type=file_types, 
         accept_multiple_files=True,
-        help="Suporta PDF e DWG/DXF (cada layout = 1 desenho)"
+        help="Suporta PDF e DWG/DXF (cada layout = 1 desenho)",
+        key=f"file_uploader_{st.session_state.uploader_key}"
     )
+    
+    # Botão de processar
     process_btn = st.button("⚡ Processar Lote", disabled=(not uploaded_files or not batch_type))
 
+    # LÓGICA DE VALIDAÇÃO DE CROP
+    # Se checkbox NÃO marcada → processa diretamente
+    # Se checkbox MARCADA → mostra preview e pede validação
+    
     if process_btn:
+        if not api_key:
+            st.error("⚠️ Falta a API Key na barra lateral!")
+        elif not show_crop_preview:
+            # Processar diretamente sem validação
+            st.session_state.crop_validated = True
+            st.session_state.should_process = True
+            st.rerun()
+        elif not st.session_state.crop_validated:
+            # Mostrar preview do crop do primeiro desenho para validação
+            st.info("### ✂️ Validação de Crop")
+            st.caption("Valida a área de crop antes de processar todos os desenhos")
+            
+            # Extrair primeira página do primeiro ficheiro para preview
+            first_file = uploaded_files[0]
+            file_ext = first_file.name.lower().split('.')[-1]
+            
+            try:
+                if file_ext == 'pdf':
+                    bytes_data = first_file.read()
+                    doc = fitz.open(stream=bytes_data, filetype="pdf")
+                    preview_img = get_image_from_page(doc, 0, crop_preset)
+                    doc.close()
+                    
+                    st.image(preview_img, caption=f"Preview: {first_file.name} (Página 1) - Crop: {crop_preset}", use_container_width=True)
+                    st.caption("⬆️ Esta é a área que a IA vai analisar em TODOS os desenhos")
+                    
+                    col_val, col_alt = st.columns(2)
+                    with col_val:
+                        if st.button("✅ Validar e Processar", type="primary", use_container_width=True, key="btn_validar"):
+                            st.session_state.crop_validated = True
+                            st.session_state.should_process = True
+                            st.rerun()
+                    with col_alt:
+                        if st.button("🔄 Alterar Crop", use_container_width=True, key="btn_alterar"):
+                            st.info("👈 Ajusta a configuração de crop na barra lateral e tenta novamente")
+                            
+                elif file_ext in ['dwg', 'dxf'] and DWG_SUPPORT:
+                    st.warning("⚠️ Preview de crop para DWG ainda não implementado. A processar diretamente...")
+                    st.session_state.crop_validated = True
+                    st.session_state.should_process = True
+                    st.rerun()
+                else:
+                    st.error(f"Tipo de ficheiro não suportado: {file_ext}")
+                    
+            except Exception as e:
+                st.error(f"Erro ao gerar preview: {e}")
+                if st.button("Continuar mesmo assim", key="btn_continuar"):
+                    st.session_state.crop_validated = True
+                    st.session_state.should_process = True
+                    st.rerun()
+
+    # PROCESSAMENTO PRINCIPAL (após validação ou direto)
+    if st.session_state.should_process and uploaded_files:
         if not api_key:
             st.error("⚠️ Falta a API Key na barra lateral!")
         else:
@@ -856,10 +955,20 @@ with col_input:
                 new_records = asyncio.run(process_all_pages())
                 st.session_state.master_data.extend(new_records)
                 status_text.success(f"✅ Processado! ({len(new_records)} desenhos extraídos)")
+                
+                # Resetar estados para próximo lote
+                st.session_state.crop_validated = False
+                st.session_state.should_process = False
+                
+                # Limpar ficheiros carregados (força reset do uploader)
+                st.session_state['uploader_key'] = st.session_state.get('uploader_key', 0) + 1
+                
                 time.sleep(1)
                 st.rerun()
             except Exception as e:
                 st.error(f"Erro no processamento: {e}")
+                st.session_state.crop_validated = False
+                st.session_state.should_process = False
 
 with col_view:
     st.subheader("2. Lista Completa")
