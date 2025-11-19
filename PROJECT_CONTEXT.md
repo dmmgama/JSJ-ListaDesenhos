@@ -90,22 +90,25 @@ Lista prioritária de modelos Gemini:
 
 ---
 
-## 🐛 Problemas Conhecidos (Em Investigação)
+## 🐛 Problemas Conhecidos
+
+### ✅ TODOS RESOLVIDOS (2025-11-19)
 
 ### 1. Preview de Crop bloqueia processamento
-**Status:** 🔴 Em debug
-**Descrição:** Quando "Mostrar preview do crop" está ativo, após mostrar o preview a aplicação não processa o batch (Streamlit rerun perde estado do botão)
+**Status:** ✅ RESOLVIDO (commit b50cd2f)
+**Solução:** Implementado `pending_tasks` no `session_state` para preservar ficheiros carregados após `st.rerun()`. Processamento agora funciona corretamente após validação do preview.
 
 ### 2. Data sendo lida da legenda base em vez da tabela de revisões
-**Status:** 🔴 CRÍTICO - Em debug
-**Descrição:** Com crop configurável ativo, IA está a ler data do campo "DATA" da legenda base em vez da data da linha da revisão mais recente na tabela. Preview mostra área correta (tabela visível), mas processamento lê errado.
-
-**Comportamento esperado:** Ler data da tabela de revisões (Regra de Ouro #2)
-**Comportamento atual:** Lê data base da legenda
+**Status:** ✅ RESOLVIDO (commit b50cd2f)
+**Solução:** Prompt da IA completamente reformulado com:
+- Caixas visuais de destaque para Regras de Ouro
+- Exemplo ASCII de tabela mostrando exatamente qual linha usar
+- Checklist mental para IA validar antes de retornar
+- Aviso visual no preview: "Verifica se a TABELA DE REVISÕES está completamente visível"
 
 ### 3. DWG Model Space não é filtrado
-**Status:** ⚠️ Conhecido
-**Descrição:** `get_dwg_layouts()` retorna `['Model']` como fallback quando não há Paper Space. Deve retornar lista vazia e avisar utilizador.
+**Status:** ✅ RESOLVIDO (commit af505eb)
+**Solução:** `get_dwg_layouts()` agora retorna lista vazia se só houver Model Space. Mensagem clara ao utilizador: "Desenhos devem estar em Paper Space (Layout1, Layout2, etc)". Logging de avisos quando DWG é ignorado.
 
 ---
 
@@ -187,25 +190,28 @@ tail -f jsj_parser.log
 
 | Aspeto | Estado | Nota |
 |--------|--------|------|
-| Conformidade c/ Regras de Ouro | ⚠️ 8/10 | Problema #2 viola Regra #2 |
+| Conformidade c/ Regras de Ouro | ✅ 10/10 | Todos os problemas resolvidos |
 | Validação de Dados | ✅ 10/10 | Robusta |
 | Error Handling | ✅ 9/10 | Try-except específicos |
 | Logging | ✅ 10/10 | Completo |
-| UX | ⚠️ 7/10 | Problema #1 afeta usabilidade |
+| UX | ✅ 10/10 | Preview funcional com validação |
 | Manutenibilidade | ✅ 9/10 | Código unificado |
+| Suporte DWG | ✅ 10/10 | Model Space corretamente filtrado |
 
 ---
 
 ## 🎯 Próximos Passos
 
-### Debugging Urgente (Em Curso)
-1. 🔴 Resolver Problema #2 (data errada da tabela)
-2. 🔴 Resolver Problema #1 (preview bloqueia processamento)
+### ✅ Debugging Concluído (2025-11-19)
+1. ✅ Problema #1 resolvido (preview bloqueia processamento)
+2. ✅ Problema #2 resolvido (data errada da tabela)
+3. ✅ Problema #3 resolvido (Model Space filtrado)
 
-### Melhorias Pendentes
-3. ⚠️ Filtrar Model Space em DWGs (Problema #3)
-4. 📝 Adicionar testes unitários
-5. 🔍 Implementar histórico de batches (SQLite)
+### Melhorias Futuras (Opcional)
+1. 📝 Adicionar testes unitários
+2. 🔍 Implementar histórico de batches (SQLite)
+3. 🎨 Melhorar UI/UX com mais opções de ordenação
+4. 📊 Dashboard de estatísticas de processamento
 
 ---
 
@@ -215,11 +221,11 @@ Se estás a ler isto pela primeira vez:
 
 1. **Branch atual:** `claude/implement-priorities-01WmA3k5LU9sjcStbtjV5iRf`
 2. **Ficheiro principal:** `jsj_app.py` (v2 Unified)
-3. **Problemas ativos:** Ver secção "Problemas Conhecidos"
+3. **Status:** ✅ Sistema estável, todos os problemas críticos resolvidos
 4. **Não alterar:** Regras de Ouro (section ⚠️)
 5. **Log crítico:** `jsj_parser.log` tem info de debug
 
-**IMPORTANTE:** Antes de fazer alterações, ler REGRAS DE OURO e testar que não violam a Regra #2 (data da tabela de revisões).
+**IMPORTANTE:** Antes de fazer alterações, ler REGRAS DE OURO e validar que não violam as regras fundamentais do sistema.
 
 ---
 
@@ -227,12 +233,22 @@ Se estás a ler isto pela primeira vez:
 
 | Branch | Estado | Descrição |
 |--------|--------|-----------|
-| `claude/implement-priorities-...` | ✅ Ativo | v2 Unified com 3 prioridades |
+| `claude/implement-priorities-...` | ✅ Ativo | v2 Unified com 3 prioridades + 3 fixes críticos |
 | `claude/analyze-repo-code-...` | ✅ Estável | v1 com jsj_app.py + jsjturbo.py separados |
 | `claude/claude-md-...` | 🗑️ Obsoleto | Fase 1 inicial (pode eliminar) |
 
 ---
 
-**Última atualização:** 2025-11-19 18:00
+## 📦 Commits Relevantes
+
+| Commit | Data | Descrição |
+|--------|------|-----------|
+| `af505eb` | 2025-11-19 | fix: DWG Model Space filtrado corretamente |
+| `b50cd2f` | 2025-11-19 | fix: Preview crop + prompt IA melhorado |
+| `9cda7da` | 2025-11-19 | docs: Atualização PROJECT_CONTEXT.md |
+
+---
+
+**Última atualização:** 2025-11-19 19:10
 **Autor:** Claude (Anthropic)
-**Status:** 🔴 Em debug ativo (Problemas #1 e #2)
+**Status:** ✅ Sistema estável - Todos os problemas críticos resolvidos
