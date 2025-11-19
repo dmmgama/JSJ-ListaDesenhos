@@ -566,37 +566,62 @@ def _ask_gemini_sync(image, file_context, api_key_param):
     ]
 
     prompt = """
-    Age como um técnico de documentação. Analisa a LEGENDA VISUAL no canto inferior direito desta imagem de desenho técnico.
+    És um técnico de documentação especializado em extrair metadados de desenhos técnicos. Analisa APENAS o que está visualmente desenhado/escrito nesta imagem.
 
-    REGRAS ESTRITAS (FONTE DE VERDADE - SÓ A IMAGEM CONTA):
-    1. **IGNORA COMPLETAMENTE O NOME DO FICHEIRO.** Só olha para o que está DESENHADO/ESCRITO na imagem.
-    2. Na LEGENDA (canto inferior direito), procura o campo "Nº DESENHO" ou "DESENHO Nº" ou similar.
-    3. Extrai o NÚMERO DO DESENHO escrito nesse campo da legenda (ex: "2025-EST-001", "DIM-001", "PIL-2025-01").
+    ╔═══════════════════════════════════════════════════════════════════╗
+    ║ REGRA DE OURO #1: IGNORA COMPLETAMENTE O NOME DO FICHEIRO        ║
+    ║ REGRA DE OURO #2: A TABELA DE REVISÕES É A FONTE DA VERDADE      ║
+    ╚═══════════════════════════════════════════════════════════════════╝
 
-    4. **TABELA DE REVISÕES (CRUCIAL):**
-       - Procura a tabela de revisões (geralmente acima da legenda, com colunas REV/DATA/DESCRIÇÃO ou similar)
-       - Identifica TODAS as linhas preenchidas na tabela
-       - A revisão MAIS RECENTE é aquela com a letra MAIS AVANÇADA alfabeticamente (ex: se existe A, B, C → a mais recente é C)
-       - Extrai a DATA que está NESSA LINHA ESPECÍFICA da revisão mais recente
-       - ATENÇÃO: NÃO uses a data base da legenda se houver revisões! Usa SEMPRE a data da linha da tabela!
+    📋 PASSO A PASSO (SEGUE RIGOROSAMENTE):
 
-    5. **Se a tabela de revisões estiver completamente vazia ou não existir:**
-       - Assume "1ª Emissão" (Rev 0)
-       - Neste caso SIM, usa a data base que está na legenda principal
+    1️⃣ LOCALIZAR A LEGENDA (geralmente canto inferior direito):
+       - Procura o campo "Nº DESENHO" ou "DESENHO Nº" ou similar
+       - Extrai o NÚMERO escrito nesse campo (ex: "2025-EST-001")
+       - Extrai o TÍTULO do desenho
 
-    **EXEMPLO PRÁTICO:**
-    - Tabela tem linhas: A (10/01/2025), B (15/02/2025), C (20/03/2025)
-    - Revisão mais recente = "C"
-    - Data a extrair = "20/03/2025" (a data da linha C, NÃO a data base!)
+    2️⃣ LOCALIZAR A TABELA DE REVISÕES (geralmente acima da legenda):
+       - Procura uma TABELA com colunas tipo: REV | DATA | DESCRIÇÃO/ALTERAÇÃO
+       - Formato comum: linhas horizontais com células preenchidas
+       - Pode estar dentro de um rectângulo/moldura separada
 
-    Retorna APENAS JSON válido com este formato:
+    3️⃣ IDENTIFICAR A REVISÃO MAIS RECENTE:
+       ⚠️ ATENÇÃO: Esta é a parte MAIS IMPORTANTE!
+
+       SE a tabela tem linhas preenchidas (ex: A, B, C):
+       ┌─────────────────────────────────────────────┐
+       │ REV │   DATA    │      ALTERAÇÃO           │
+       ├─────┼───────────┼──────────────────────────┤
+       │  A  │ 10/01/2025│ Primeira emissão         │ ← NÃO usar esta
+       │  B  │ 15/02/2025│ Correcção de medidas     │ ← NÃO usar esta
+       │  C  │ 20/03/2025│ Ajuste de armaduras      │ ← USAR ESTA! ✓
+       └─────┴───────────┴──────────────────────────┘
+
+       → A revisão mais recente é "C" (letra mais avançada)
+       → A data a extrair é "20/03/2025" (data da LINHA C)
+       → 🚫 NÃO USES a data base da legenda!
+       → 🚫 NÃO USES a data do campo "DATA:" da legenda principal!
+
+       SE a tabela estiver COMPLETAMENTE VAZIA (sem linhas preenchidas):
+       → Revisão = "0" (primeira emissão)
+       → Neste caso SIM, usa a data base do campo "DATA:" da legenda principal
+
+    4️⃣ VALIDAÇÃO FINAL:
+       - Confirma que a data extraída corresponde à linha da revisão mais avançada
+       - Se houver dúvida, menciona na obs
+
+    📤 RETORNA APENAS JSON VÁLIDO (sem comentários):
     {
-        "num_desenho": "string (O NÚMERO escrito na legenda visual, ex: 2025-EST-001)",
-        "titulo": "string (título principal do desenho na legenda)",
-        "revisao": "string (A LETRA mais avançada encontrada na tabela de revisões ou '0' se vazia)",
-        "data": "string (A DATA da linha dessa revisão específica, ou data base se Rev 0)",
-        "obs": "string (Avisos se ilegível ou campo em falta, senão vazio)"
+        "num_desenho": "string - Número escrito no campo da legenda",
+        "titulo": "string - Título do desenho",
+        "revisao": "string - Letra mais avançada da tabela OU '0' se vazia",
+        "data": "string - Data DD/MM/YYYY da LINHA dessa revisão (ou data base se Rev 0)",
+        "obs": "string - Avisos se ilegível/em falta, senão vazio"
     }
+
+    ⚠️ VERIFICAÇÃO: Antes de retornar, confirma mentalmente:
+    - "A data que estou a retornar vem da LINHA da revisão mais recente?"
+    - "Ou vem do campo DATA base porque a tabela está vazia?"
     """
 
     last_error = ""
@@ -733,7 +758,7 @@ with col_input:
     # LÓGICA DE VALIDAÇÃO DE CROP
     # Se checkbox NÃO marcada → processa diretamente
     # Se checkbox MARCADA → mostra preview e pede validação
-    
+
     if process_btn:
         if not api_key:
             st.error("⚠️ Falta a API Key na barra lateral!")
@@ -741,53 +766,61 @@ with col_input:
             # Processar diretamente sem validação
             st.session_state.crop_validated = True
             st.session_state.should_process = True
+            st.session_state.pending_tasks = uploaded_files
             st.rerun()
-        elif not st.session_state.crop_validated:
+        else:
             # Mostrar preview do crop do primeiro desenho para validação
             st.info("### ✂️ Validação de Crop")
             st.caption("Valida a área de crop antes de processar todos os desenhos")
-            
+
             # Extrair primeira página do primeiro ficheiro para preview
             first_file = uploaded_files[0]
             file_ext = first_file.name.lower().split('.')[-1]
-            
+
             try:
                 if file_ext == 'pdf':
                     bytes_data = first_file.read()
                     doc = fitz.open(stream=bytes_data, filetype="pdf")
                     preview_img = get_image_from_page(doc, 0, crop_preset)
                     doc.close()
-                    
+
                     st.image(preview_img, caption=f"Preview: {first_file.name} (Página 1) - Crop: {crop_preset}", use_container_width=True)
                     st.caption("⬆️ Esta é a área que a IA vai analisar em TODOS os desenhos")
-                    
+                    st.warning("⚠️ **ATENÇÃO:** Verifica se a TABELA DE REVISÕES está completamente visível. Se não estiver, ajusta o crop na barra lateral.")
+
                     col_val, col_alt = st.columns(2)
                     with col_val:
                         if st.button("✅ Validar e Processar", type="primary", use_container_width=True, key="btn_validar"):
                             st.session_state.crop_validated = True
                             st.session_state.should_process = True
+                            st.session_state.pending_tasks = uploaded_files
                             st.rerun()
                     with col_alt:
                         if st.button("🔄 Alterar Crop", use_container_width=True, key="btn_alterar"):
                             st.info("👈 Ajusta a configuração de crop na barra lateral e tenta novamente")
-                            
+
                 elif file_ext in ['dwg', 'dxf'] and DWG_SUPPORT:
                     st.warning("⚠️ Preview de crop para DWG ainda não implementado. A processar diretamente...")
                     st.session_state.crop_validated = True
                     st.session_state.should_process = True
+                    st.session_state.pending_tasks = uploaded_files
                     st.rerun()
                 else:
                     st.error(f"Tipo de ficheiro não suportado: {file_ext}")
-                    
+
             except Exception as e:
                 st.error(f"Erro ao gerar preview: {e}")
                 if st.button("Continuar mesmo assim", key="btn_continuar"):
                     st.session_state.crop_validated = True
                     st.session_state.should_process = True
+                    st.session_state.pending_tasks = uploaded_files
                     st.rerun()
 
     # PROCESSAMENTO PRINCIPAL (após validação ou direto)
-    if st.session_state.should_process and uploaded_files:
+    # Usar pending_tasks em vez de uploaded_files para evitar perda após rerun
+    files_to_process = st.session_state.pending_tasks if st.session_state.should_process else None
+
+    if st.session_state.should_process and files_to_process:
         if not api_key:
             st.error("⚠️ Falta a API Key na barra lateral!")
         else:
@@ -797,8 +830,8 @@ with col_input:
             # Pré-processamento: Extrair todas as páginas/layouts
             all_tasks = []
             total_operations = 0
-            
-            for file in uploaded_files:
+
+            for file in files_to_process:
                 file_ext = file.name.lower().split('.')[-1]
                 
                 try:
@@ -806,13 +839,6 @@ with col_input:
                         # Processar PDF
                         bytes_data = file.read()
                         doc = fitz.open(stream=bytes_data, filetype="pdf")
-
-                        # Preview do crop (se ativado e primeira página do primeiro ficheiro)
-                        if show_crop_preview and len(all_tasks) == 0 and doc.page_count > 0:
-                            preview_img = get_image_from_page(doc, 0, crop_preset)
-                            st.info(f"👁️ Preview da área de crop: {crop_preset}")
-                            st.image(preview_img, caption=f"Preview: {file.name} (Página 1)", width=400)
-                            st.caption("Esta é a área que a IA vai analisar em todas as páginas.")
 
                         for page_num in range(doc.page_count):
                             display_name = f"{file.name} (Pág. {page_num + 1})"
@@ -955,20 +981,22 @@ with col_input:
                 new_records = asyncio.run(process_all_pages())
                 st.session_state.master_data.extend(new_records)
                 status_text.success(f"✅ Processado! ({len(new_records)} desenhos extraídos)")
-                
+
                 # Resetar estados para próximo lote
                 st.session_state.crop_validated = False
                 st.session_state.should_process = False
-                
+                st.session_state.pending_tasks = None
+
                 # Limpar ficheiros carregados (força reset do uploader)
                 st.session_state['uploader_key'] = st.session_state.get('uploader_key', 0) + 1
-                
+
                 time.sleep(1)
                 st.rerun()
             except Exception as e:
                 st.error(f"Erro no processamento: {e}")
                 st.session_state.crop_validated = False
                 st.session_state.should_process = False
+                st.session_state.pending_tasks = None
 
 with col_view:
     st.subheader("2. Lista Completa")
