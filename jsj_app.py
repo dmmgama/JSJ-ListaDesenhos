@@ -22,10 +22,26 @@ if 'master_data' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Configuração")
     api_key = st.text_input("Google Gemini API Key", type="password")
-    
+
+    st.divider()
+
+    # PAINEL DE LOTES CARREGADOS
+    st.subheader("📦 Lotes em Memória")
+    if len(st.session_state.master_data) > 0:
+        # Agrupar por TIPO e contar
+        df_temp = pd.DataFrame(st.session_state.master_data)
+        summary = df_temp.groupby('TIPO').size().sort_index()
+
+        for tipo, count in summary.items():
+            st.metric(label=tipo, value=f"{count} desenhos")
+
+        st.caption(f"**Total:** {len(st.session_state.master_data)} desenhos")
+    else:
+        st.info("Nenhum lote carregado ainda.")
+
     st.divider()
     st.caption("A tabela de revisões visual é a fonte de verdade.")
-    
+
     if st.button("🗑️ Limpar Toda a Memória", type="primary"):
         st.session_state.master_data = []
         st.rerun()
@@ -62,22 +78,26 @@ def ask_gemini(image, file_context):
     ]
 
     prompt = """
-    Age como um técnico de documentação. Analisa a Legenda e a Tabela de Revisões desta imagem.
-    
-    REGRAS ESTRITAS (FONTE DE VERDADE):
-    1. Ignora o nome do ficheiro. Olha apenas para a imagem.
-    2. Procura a "Tabela de Revisões" (geralmente acima da legenda).
-    3. Identifica a letra da revisão MAIS RECENTE preenchida (ex: Se tiver A, B e C, a mais recente é C).
-    4. Extrai a DATA escrita nessa linha específica da tabela (linha da revisão mais recente).
-    5. Se a tabela estiver vazia, assume que é "1ª Emissão" (Rev 0) e usa a data base da legenda.
+    Age como um técnico de documentação. Analisa a LEGENDA VISUAL no canto inferior direito desta imagem de desenho técnico.
+
+    REGRAS ESTRITAS (FONTE DE VERDADE - SÓ A IMAGEM CONTA):
+    1. **IGNORA COMPLETAMENTE O NOME DO FICHEIRO.** Só olha para o que está DESENHADO/ESCRITO na imagem.
+    2. Na LEGENDA (canto inferior direito), procura o campo "Nº DESENHO" ou "DESENHO Nº" ou similar.
+    3. Extrai o NÚMERO DO DESENHO escrito nesse campo da legenda (ex: "2025-EST-001", "DIM-001", "PIL-2025-01").
+    4. Procura a "Tabela de Revisões" (geralmente acima da legenda, com colunas REV/DATA/DESCRIÇÃO).
+    5. Identifica a letra da revisão MAIS RECENTE preenchida (ex: Se tiver A, B e C preenchidos, a mais recente é C).
+    6. Extrai a DATA escrita nessa linha específica da tabela (linha da revisão mais recente).
+    7. Se a tabela de revisões estiver vazia, assume "1ª Emissão" (Rev 0) e usa a data base da legenda.
+
+    ATENÇÃO: O num_desenho DEVE vir da LEGENDA DESENHADA, NÃO do nome do ficheiro!
 
     Retorna APENAS JSON válido com este formato:
     {
-        "num_desenho": "string (ex: 2025-EST-001)",
-        "titulo": "string (titulo principal)",
-        "revisao": "string (A letra encontrada na tabela ou '0')",
-        "data": "string (A data encontrada na linha correspondente à revisão)",
-        "obs": "string (Qualquer aviso se a imagem estiver ilegível, senão vazio)"
+        "num_desenho": "string (O NÚMERO escrito na legenda visual, ex: 2025-EST-001)",
+        "titulo": "string (título principal do desenho na legenda)",
+        "revisao": "string (A letra encontrada na tabela de revisões ou '0')",
+        "data": "string (A data da linha correspondente à revisão)",
+        "obs": "string (Avisos se ilegível ou campo em falta, senão vazio)"
     }
     """
 
