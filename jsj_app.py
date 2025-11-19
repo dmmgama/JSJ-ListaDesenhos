@@ -19,6 +19,10 @@ st.set_page_config(
 # --- INICIALIZAÇÃO DO ESTADO (MEMÓRIA TEMPORÁRIA) ---
 if 'master_data' not in st.session_state:
     st.session_state.master_data = []
+if 'total_tokens' not in st.session_state:
+    st.session_state.total_tokens = 0
+if 'ordem_customizada' not in st.session_state:
+    st.session_state.ordem_customizada = []
 
 # --- BARRA LATERAL (CONFIGURAÇÃO) ---
 with st.sidebar:
@@ -43,9 +47,28 @@ with st.sidebar:
 
     st.divider()
     st.caption("A tabela de revisões visual é a fonte de verdade.")
+    
+    # CONTADOR DE TOKENS E CUSTO
+    if st.session_state.total_tokens > 0:
+        st.divider()
+        st.subheader("💰 Custo Estimado")
+        # Gemini Flash 2.5: $0.075 / 1M tokens input, $0.30 / 1M tokens output
+        # Estimativa conservadora: 70% input, 30% output
+        input_tokens = st.session_state.total_tokens * 0.7
+        output_tokens = st.session_state.total_tokens * 0.3
+        custo_usd = (input_tokens * 0.075 / 1_000_000) + (output_tokens * 0.30 / 1_000_000)
+        custo_eur = custo_usd * 0.95  # Conversão aproximada USD->EUR
+        
+        st.metric("Tokens Usados", f"{st.session_state.total_tokens:,}")
+        st.metric("Custo Estimado", f"€{custo_eur:.4f}")
+        st.caption(f"≈ ${custo_usd:.4f} USD")
+
+    st.divider()
 
     if st.button("🗑️ Limpar Toda a Memória", type="primary"):
         st.session_state.master_data = []
+        st.session_state.total_tokens = 0
+        st.session_state.ordem_customizada = []
         st.rerun()
 
 # --- FUNÇÕES DE PROCESSAMENTO (BACKEND) ---
@@ -166,13 +189,21 @@ def _ask_gemini_sync(image, file_context):
 
             # Se chegou aqui, funcionou!
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_text)
+            
+            # Contabilizar tokens (estimativa)
+            if hasattr(response, 'usage_metadata'):
+                total = response.usage_metadata.total_token_count
+            else:
+                # Estimativa se não houver metadata: ~500 tokens por request
+                total = 500
+            
+            return json.loads(clean_text), total
 
         except Exception as e:
             last_error = str(e)
             continue
 
-    return {"error": f"Falha IA. Último erro: {last_error}", "num_desenho": "ERRO", "titulo": file_context}
+    return {"error": f"Falha IA. Último erro: {last_error}", "num_desenho": "ERRO", "titulo": file_context}, 0
 
 # --- INTERFACE PRINCIPAL (FRONTEND) ---
 
@@ -249,12 +280,20 @@ with col_input:
                     results = await asyncio.gather(*batch, return_exceptions=True)
                     
                     # Processar resultados
-                    for idx, data in enumerate(results):
+                    for idx, result in enumerate(results):
                         task_idx = i + idx
                         task_info = all_tasks[task_idx]
                         
-                        if isinstance(data, Exception):
-                            data = {"error": str(data), "num_desenho": "ERRO", "titulo": task_info["display_name"]}
+                        # Desempacotar resultado (data, tokens)
+                        if isinstance(result, Exception):
+                            data = {"error": str(result), "num_desenho": "ERRO", "titulo": task_info["display_name"]}
+                            tokens = 0
+                        elif isinstance(result, tuple):
+                            data, tokens = result
+                            st.session_state.total_tokens += tokens
+                        else:
+                            data = result
+                            tokens = 0
                         
                         record = {
                             "TIPO": task_info["batch_type"],
@@ -292,33 +331,43 @@ with col_view:
         
         # PAINEL DE REORDENAÇÃO POR TIPO
         st.markdown("### 🔄 Reordenar por Tipo")
-        col_ordem1, col_ordem2 = st.columns([3, 1])
         
-        with col_ordem1:
-            tipos_unicos = sorted(df['TIPO'].unique().tolist())
-            ordem_tipos = st.multiselect(
-                "Arrasta para reordenar a sequência de tipos",
-                options=tipos_unicos,
-                default=tipos_unicos,
-                help="A ordem escolhida será aplicada à tabela abaixo"
-            )
+        tipos_unicos = sorted(df['TIPO'].unique().tolist())
         
-        with col_ordem2:
-            if st.button("✅ Aplicar Ordem", type="primary"):
-                if ordem_tipos:
-                    # Criar um mapeamento de ordem
-                    ordem_map = {tipo: idx for idx, tipo in enumerate(ordem_tipos)}
-                    df['_ordem'] = df['TIPO'].map(ordem_map)
-                    df = df.sort_values(by=['_ordem', 'Num. Desenho'])
-                    df = df.drop('_ordem', axis=1)
-                    st.session_state.master_data = df.to_dict('records')
-                    st.success("Ordem aplicada!")
-                    time.sleep(0.5)
-                    st.rerun()
+        st.caption("Clica nos tipos pela ordem desejada (1º, 2º, 3º...)")
+        col_pills, col_btn = st.columns([4, 1])
         
-        # Aplicar ordenação padrão se não houver ordem customizada
-        if "Num. Desenho" in df.columns and "TIPO" in df.columns:
-            df = df.sort_values(by=["TIPO", "Num. Desenho"])
+        with col_pills:
+            # Interface para definir ordem
+            st.write("**Ordem atual:**", " → ".join(st.session_state.ordem_customizada) if st.session_state.ordem_customizada else "Alfabética")
+            
+            cols = st.columns(len(tipos_unicos))
+            for idx, tipo in enumerate(tipos_unicos):
+                with cols[idx]:
+                    if st.button(tipo, key=f"tipo_{tipo}", use_container_width=True):
+                        if tipo in st.session_state.ordem_customizada:
+                            st.session_state.ordem_customizada.remove(tipo)
+                        else:
+                            st.session_state.ordem_customizada.append(tipo)
+                        st.rerun()
+        
+        with col_btn:
+            if st.button("🔄 Reset", help="Voltar à ordem alfabética"):
+                st.session_state.ordem_customizada = []
+                st.rerun()
+        
+        # Aplicar ordenação
+        if st.session_state.ordem_customizada:
+            # Usar ordem customizada
+            ordem_completa = st.session_state.ordem_customizada + [t for t in tipos_unicos if t not in st.session_state.ordem_customizada]
+            ordem_map = {tipo: idx for idx, tipo in enumerate(ordem_completa)}
+            df['_ordem'] = df['TIPO'].map(ordem_map)
+            df = df.sort_values(by=['_ordem', 'Num. Desenho'])
+            df = df.drop('_ordem', axis=1)
+        else:
+            # Ordem alfabética padrão
+            if "Num. Desenho" in df.columns and "TIPO" in df.columns:
+                df = df.sort_values(by=["TIPO", "Num. Desenho"])
         
         st.divider()
         
