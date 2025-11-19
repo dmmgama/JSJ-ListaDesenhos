@@ -6,6 +6,8 @@ from PIL import Image
 import io
 import json
 import time
+import asyncio
+from collections import deque
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -48,26 +50,69 @@ with st.sidebar:
 
 # --- FUNÇÕES DE PROCESSAMENTO (BACKEND) ---
 
+class RateLimiter:
+    """Rate limiter inteligente para respeitar limites da API Gemini.
+
+    Gemini Flash v2.5/v2.0: 15 requests/minuto
+    Implementa sliding window para máxima eficiência.
+    """
+    def __init__(self, max_requests=15, time_window=60):
+        self.max_requests = max_requests
+        self.time_window = time_window
+        self.requests = deque()
+
+    async def acquire(self):
+        """Aguarda até que seja seguro fazer um novo request."""
+        now = time.time()
+
+        # Remove requests antigos fora da janela
+        while self.requests and self.requests[0] < now - self.time_window:
+            self.requests.popleft()
+
+        # Se atingiu o limite, espera o tempo mínimo necessário
+        if len(self.requests) >= self.max_requests:
+            sleep_time = self.requests[0] + self.time_window - now + 0.1
+            await asyncio.sleep(sleep_time)
+            return await self.acquire()  # Re-check após espera
+
+        # Registra o novo request
+        self.requests.append(now)
+
 def get_image_from_page(doc, page_num):
     """Extrai a imagem (crop da legenda) de uma página específica do documento."""
     page = doc.load_page(page_num)
-    
-    # Crop inteligente: Pega nos 40% inferiores e 60% à direita
+
+    # CROP OTIMIZADO: Quadrante inferior direito completo (50% x 50%)
+    # Captura a zona da legenda e tabela de revisões de forma mais abrangente
     rect = page.rect
-    crop_rect = fitz.Rect(rect.width * 0.4, rect.height * 0.4, rect.width, rect.height)
-    
+    crop_rect = fitz.Rect(
+        rect.width * 0.50,   # Começa a 50% da largura (metade direita)
+        rect.height * 0.50,  # Começa a 50% da altura (metade inferior)
+        rect.width,
+        rect.height
+    )
+
     pix = page.get_pixmap(clip=crop_rect, matrix=fitz.Matrix(2, 2)) # 2x zoom para clareza
     img_data = pix.tobytes("png")
-    
+
     return Image.open(io.BytesIO(img_data))
 
-def ask_gemini(image, file_context):
-    """O Cérebro: Tenta modelos confirmados na tua conta (v2.5/v2.0)."""
+async def ask_gemini_async(image, file_context, rate_limiter):
+    """O Cérebro Assíncrono: Processa requests em paralelo com rate limiting."""
     if not api_key:
         return {"error": "Sem API Key"}
 
+    # Aguarda permissão do rate limiter
+    await rate_limiter.acquire()
+
+    # Executa a chamada síncrona da API em thread separada
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _ask_gemini_sync, image, file_context)
+
+def _ask_gemini_sync(image, file_context):
+    """Wrapper síncrono para chamada ao Gemini (executado em thread pool)."""
     genai.configure(api_key=api_key)
-    
+
     # LISTA DE MODELOS ATUALIZADA
     models_to_try = [
         'gemini-2.5-flash',          # PRIORIDADE 1
@@ -84,19 +129,29 @@ def ask_gemini(image, file_context):
     1. **IGNORA COMPLETAMENTE O NOME DO FICHEIRO.** Só olha para o que está DESENHADO/ESCRITO na imagem.
     2. Na LEGENDA (canto inferior direito), procura o campo "Nº DESENHO" ou "DESENHO Nº" ou similar.
     3. Extrai o NÚMERO DO DESENHO escrito nesse campo da legenda (ex: "2025-EST-001", "DIM-001", "PIL-2025-01").
-    4. Procura a "Tabela de Revisões" (geralmente acima da legenda, com colunas REV/DATA/DESCRIÇÃO).
-    5. Identifica a letra da revisão MAIS RECENTE preenchida (ex: Se tiver A, B e C preenchidos, a mais recente é C).
-    6. Extrai a DATA escrita nessa linha específica da tabela (linha da revisão mais recente).
-    7. Se a tabela de revisões estiver vazia, assume "1ª Emissão" (Rev 0) e usa a data base da legenda.
-
-    ATENÇÃO: O num_desenho DEVE vir da LEGENDA DESENHADA, NÃO do nome do ficheiro!
+    
+    4. **TABELA DE REVISÕES (CRUCIAL):**
+       - Procura a tabela de revisões (geralmente acima da legenda, com colunas REV/DATA/DESCRIÇÃO ou similar)
+       - Identifica TODAS as linhas preenchidas na tabela
+       - A revisão MAIS RECENTE é aquela com a letra MAIS AVANÇADA alfabeticamente (ex: se existe A, B, C → a mais recente é C)
+       - Extrai a DATA que está NESSA LINHA ESPECÍFICA da revisão mais recente
+       - ATENÇÃO: NÃO uses a data base da legenda se houver revisões! Usa SEMPRE a data da linha da tabela!
+    
+    5. **Se a tabela de revisões estiver completamente vazia ou não existir:**
+       - Assume "1ª Emissão" (Rev 0)
+       - Neste caso SIM, usa a data base que está na legenda principal
+    
+    **EXEMPLO PRÁTICO:**
+    - Tabela tem linhas: A (10/01/2025), B (15/02/2025), C (20/03/2025)
+    - Revisão mais recente = "C"
+    - Data a extrair = "20/03/2025" (a data da linha C, NÃO a data base!)
 
     Retorna APENAS JSON válido com este formato:
     {
         "num_desenho": "string (O NÚMERO escrito na legenda visual, ex: 2025-EST-001)",
         "titulo": "string (título principal do desenho na legenda)",
-        "revisao": "string (A letra encontrada na tabela de revisões ou '0')",
-        "data": "string (A data da linha correspondente à revisão)",
+        "revisao": "string (A LETRA mais avançada encontrada na tabela de revisões ou '0' se vazia)",
+        "data": "string (A DATA da linha dessa revisão específica, ou data base se Rev 0)",
         "obs": "string (Avisos se ilegível ou campo em falta, senão vazio)"
     }
     """
@@ -108,11 +163,11 @@ def ask_gemini(image, file_context):
         try:
             model = genai.GenerativeModel(model_name)
             response = model.generate_content([prompt, image])
-            
+
             # Se chegou aqui, funcionou!
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
             return json.loads(clean_text)
-            
+
         except Exception as e:
             last_error = str(e)
             continue
@@ -138,69 +193,97 @@ with col_input:
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
-            new_records = []
             
+            # Pré-processamento: Extrair todas as páginas
+            all_tasks = []
             total_operations = 0
-            # Pré-cálculo para a barra de progresso (contar páginas totais)
-            files_data = []
+            
             for pdf_file in uploaded_files:
                 try:
                     bytes_data = pdf_file.read()
                     doc = fitz.open(stream=bytes_data, filetype="pdf")
-                    total_operations += doc.page_count
-                    files_data.append({"name": pdf_file.name, "doc": doc})
-                except:
-                    pass
-            
-            current_op = 0
-            
-            # LOOP PRINCIPAL
-            for file_item in files_data:
-                doc = file_item["doc"]
-                fname = file_item["name"]
-                
-                # ITERAR POR TODAS AS PÁGINAS DO PDF
-                for page_num in range(doc.page_count):
-                    current_op += 1
-                    display_name = f"{fname} (Pág. {page_num + 1})"
-                    status_text.text(f"A analisar: {display_name}...")
                     
-                    try:
-                        # 1. Imagem da página específica
+                    for page_num in range(doc.page_count):
+                        display_name = f"{pdf_file.name} (Pág. {page_num + 1})"
                         img = get_image_from_page(doc, page_num)
                         
-                        # 2. IA
-                        data = ask_gemini(img, display_name)
+                        all_tasks.append({
+                            "image": img,
+                            "display_name": display_name,
+                            "batch_type": batch_type.upper()
+                        })
+                        total_operations += 1
+                    
+                    doc.close()
+                except Exception as e:
+                    st.error(f"Erro ao ler {pdf_file.name}: {e}")
+            
+            # Processamento Assíncrono em Paralelo
+            async def process_all_pages():
+                """Processa todas as páginas em paralelo com rate limiting."""
+                rate_limiter = RateLimiter(max_requests=15, time_window=60)
+                new_records = []
+                
+                # Criar tasks assíncronas para todas as páginas
+                async_tasks = []
+                for task_data in all_tasks:
+                    async_tasks.append(
+                        ask_gemini_async(
+                            task_data["image"], 
+                            task_data["display_name"],
+                            rate_limiter
+                        )
+                    )
+                
+                # Processar em batches de 5 para não sobrecarregar
+                batch_size = 5
+                completed = 0
+                
+                for i in range(0, len(async_tasks), batch_size):
+                    batch = async_tasks[i:i + batch_size]
+                    batch_names = [all_tasks[j]["display_name"] for j in range(i, min(i + batch_size, len(all_tasks)))]
+                    
+                    status_text.text(f"A processar batch {i//batch_size + 1} ({len(batch)} páginas)...")
+                    
+                    # Executar batch em paralelo
+                    results = await asyncio.gather(*batch, return_exceptions=True)
+                    
+                    # Processar resultados
+                    for idx, data in enumerate(results):
+                        task_idx = i + idx
+                        task_info = all_tasks[task_idx]
                         
-                        # 3. Montar Registo
+                        if isinstance(data, Exception):
+                            data = {"error": str(data), "num_desenho": "ERRO", "titulo": task_info["display_name"]}
+                        
                         record = {
-                            "TIPO": batch_type.upper(),
+                            "TIPO": task_info["batch_type"],
                             "Num. Desenho": data.get("num_desenho", "N/A"),
                             "Titulo": data.get("titulo", "N/A"),
                             "Revisão": data.get("revisao", "-"),
                             "Data": data.get("data", "-"),
-                            "Ficheiro": display_name, # Nome + Página
+                            "Ficheiro": task_info["display_name"],
                             "Obs": data.get("obs", "")
                         }
+                        
                         if "error" in data:
                             record["Obs"] = f"Erro IA: {data['error']}"
-
+                        
                         new_records.append(record)
-                        
-                        # Delay para não exceder Rate Limit (1.5s)
-                        time.sleep(1.5)
-                        
-                    except Exception as e:
-                        st.error(f"Erro em {display_name}: {e}")
-                    
-                    progress_bar.progress(current_op / total_operations)
+                        completed += 1
+                        progress_bar.progress(completed / total_operations)
                 
-                doc.close()
-
-            st.session_state.master_data.extend(new_records)
-            status_text.success(f"✅ Processado! ({len(new_records)} desenhos extraídos)")
-            time.sleep(1)
-            st.rerun()
+                return new_records
+            
+            # Executar processamento assíncrono
+            try:
+                new_records = asyncio.run(process_all_pages())
+                st.session_state.master_data.extend(new_records)
+                status_text.success(f"✅ Processado! ({len(new_records)} desenhos extraídos)")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro no processamento: {e}")
 
 with col_view:
     st.subheader("2. Lista Completa")
