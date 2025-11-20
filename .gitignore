@@ -9,8 +9,17 @@ __pycache__/
 
 # Sistema
 .DS_Store
-JSJ-ListaDesenhos-ContextPack-v1.md
-check_api.py
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Ficheiros de trabalho/teste
+JSJ-ListaDesenhos-ContextPack-v1.md
+check_api.py
+FicheirosTrabalho/
+ContextPack Claude Desktop Project/
+*.dwg
+*.dxf
+*.log
+~$*.xlsx
+.claude/

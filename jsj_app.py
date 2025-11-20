@@ -318,6 +318,87 @@ def get_image_from_page(doc, page_num, crop_preset="Canto Inf. Direito (50%)"):
 
     return Image.open(io.BytesIO(img_data))
 
+def extract_dwg_native_blocks(dwg_path, layout_name):
+    """Extrai dados nativos de TODOS os blocos LEGENDA_JSJ_V1 num layout.
+    
+    Retorna: list[dict] com dados extraídos de cada bloco encontrado.
+             Lista vazia se não houver blocos LEGENDA ou se falhar.
+    """
+    if not DWG_SUPPORT:
+        return []
+    
+    try:
+        doc = ezdxf.readfile(dwg_path)
+        
+        # Obter layout
+        if layout_name == 'Model':
+            layout = doc.modelspace()
+        else:
+            layout = doc.paperspace(layout_name)
+        
+        # Procurar TODOS os INSERTs de blocos com "LEGENDA" no nome
+        inserts = [i for i in layout.query('INSERT') if "LEGENDA" in i.dxf.name.upper()]
+        
+        if not inserts:
+            logger.info(f"Nenhum bloco LEGENDA encontrado em {layout_name}")
+            return []
+        
+        logger.info(f"Encontrados {len(inserts)} blocos LEGENDA em {layout_name}")
+        
+        extracted_blocks = []
+        
+        for insert_idx, insert in enumerate(inserts):
+            try:
+                # Converter lista de atributos para dict
+                attribs_dict = {a.dxf.tag: a.dxf.text for a in insert.attribs}
+                
+                # Extrair campos diretos
+                tipo = attribs_dict.get('TIPO', '').strip()
+                num_desenho = attribs_dict.get('DES_NUM', '').strip()
+                titulo = attribs_dict.get('TITULO', '').strip()
+                primeira_emissao = attribs_dict.get('DATA', '').strip()  # Data base (1ª Emissão)
+                
+                # HISTÓRICO DE REVISÕES: Verificar ordem crescente A→E, guardar a ÚLTIMA (mais avançada)
+                revisao_letra = ''
+                revisao_data = ''
+                revisao_desc = ''
+                
+                for rev in ['A', 'B', 'C', 'D', 'E']:
+                    rev_tag = attribs_dict.get(f'REV_{rev}', '').strip()
+                    if rev_tag:  # Tag REV_* não vazia → atualizar (última sobrescreve)
+                        revisao_letra = rev
+                        revisao_data = attribs_dict.get(f'DATA_{rev}', '').strip()
+                        revisao_desc = attribs_dict.get(f'DESC_{rev}', '').strip()
+                # Resultado: revisao_letra contém a letra mais avançada no alfabeto
+                
+                # Validar se tem dados mínimos
+                if not num_desenho and not titulo:
+                    logger.warning(f"Bloco {insert_idx+1} em {layout_name}: campos vazios, ignorado")
+                    continue
+                
+                extracted_blocks.append({
+                    'tipo': tipo or 'N/A',
+                    'num_desenho': num_desenho or 'N/A',
+                    'titulo': titulo or 'Sem título',
+                    'primeira_emissao': primeira_emissao or 'N/A',
+                    'revisao': revisao_letra,           # Vazio se sem revisões
+                    'data_revisao': revisao_data,       # Vazio se sem revisões
+                    'desc_revisao': revisao_desc,       # Vazio se sem revisões
+                    'obs': 'Extração nativa (zero custo)'
+                })
+                
+                logger.info(f"Bloco {insert_idx+1}: {num_desenho} - Rev {revisao_letra if revisao_letra else '(1ª Emissão)'}")
+                
+            except Exception as e:
+                logger.error(f"Erro ao extrair bloco {insert_idx+1} em {layout_name}: {e}")
+                continue
+        
+        return extracted_blocks
+        
+    except Exception as e:
+        logger.error(f"Erro na extração nativa de {layout_name}: {e}")
+        return []
+
 def get_image_from_dwg_layout(dwg_path, layout_name):
     """Extrai imagem de um layout específico de um ficheiro DWG."""
     if not DWG_SUPPORT:
@@ -853,14 +934,15 @@ with col_input:
                             all_tasks.append({
                                 "image": img,
                                 "display_name": display_name,
-                                "batch_type": batch_type.upper()
+                                "batch_type": batch_type.upper(),
+                                "is_native": False
                             })
                             total_operations += 1
 
                         doc.close()
                         
                     elif file_ext in ['dwg', 'dxf'] and DWG_SUPPORT:
-                        # Processar DWG/DXF
+                        # Processar DWG/DXF com HYBRID WORKFLOW
                         status_text.text(f"A processar {file.name}...")
                         
                         # Guardar temporariamente (ezdxf precisa de ficheiro no disco)
@@ -881,17 +963,39 @@ with col_input:
                             
                             for layout_idx, layout_name in enumerate(layouts):
                                 try:
-                                    display_name = f"{file.name} (Layout: {layout_name})"
-                                    status_text.text(f"A renderizar {display_name}...")
+                                    # TENTATIVA 1: Extração Nativa (zero custo, instant)
+                                    status_text.text(f"Tentando extração nativa de {file.name} (Layout: {layout_name})...")
+                                    native_blocks = extract_dwg_native_blocks(tmp_path, layout_name)
                                     
-                                    img = get_image_from_dwg_layout(tmp_path, layout_name)
-                                    
-                                    all_tasks.append({
-                                        "image": img,
-                                        "display_name": display_name,
-                                        "batch_type": batch_type.upper()
-                                    })
-                                    total_operations += 1
+                                    if native_blocks:
+                                        # Sucesso! Adicionar todos os blocos encontrados
+                                        for block_idx, block_data in enumerate(native_blocks):
+                                            display_name = f"{file.name} (Layout: {layout_name}, Bloco {block_idx+1})"
+                                            
+                                            all_tasks.append({
+                                                "native_data": block_data,  # Dados já extraídos!
+                                                "display_name": display_name,
+                                                "batch_type": batch_type.upper(),
+                                                "is_native": True
+                                            })
+                                            total_operations += 1
+                                        
+                                        logger.info(f"✅ Extração nativa: {len(native_blocks)} blocos em {layout_name}")
+                                    else:
+                                        # FALLBACK: Rendering + Gemini (custo API)
+                                        logger.warning(f"Sem blocos LEGENDA em {layout_name}, usando rendering + Gemini")
+                                        display_name = f"{file.name} (Layout: {layout_name})"
+                                        status_text.text(f"A renderizar {display_name} (fallback)...")
+                                        
+                                        img = get_image_from_dwg_layout(tmp_path, layout_name)
+                                        
+                                        all_tasks.append({
+                                            "image": img,
+                                            "display_name": display_name,
+                                            "batch_type": batch_type.upper(),
+                                            "is_native": False
+                                        })
+                                        total_operations += 1
                                     
                                 except Exception as layout_error:
                                     st.warning(f"⚠️ Erro no layout '{layout_name}' de {file.name}: {str(layout_error)}")
@@ -911,7 +1015,7 @@ with col_input:
                 except Exception as e:
                     st.error(f"Erro ao ler {file.name}: {e}")
             
-            # Processamento Assíncrono em Paralelo
+            # Processamento Assíncrono em Paralelo (HYBRID: Native + Gemini)
             async def process_all_pages():
                 """Processa todas as páginas em paralelo com rate limiting."""
                 # Configurar rate limiter e batch size baseado no modo
@@ -926,60 +1030,90 @@ with col_input:
 
                 new_records = []
 
-                # Criar tasks assíncronas para todas as páginas
-                async_tasks = []
-                for task_data in all_tasks:
-                    async_tasks.append(
-                        ask_gemini_async(
-                            task_data["image"],
-                            task_data["display_name"],
-                            rate_limiter,
-                            api_key
-                        )
-                    )
+                # Separar tasks nativas (sem custo) de tasks de imagem (Gemini)
+                native_tasks = [t for t in all_tasks if t.get("is_native", False)]
+                gemini_tasks = [t for t in all_tasks if not t.get("is_native", False)]
+                
                 completed = 0
                 
-                for i in range(0, len(async_tasks), batch_size):
-                    batch = async_tasks[i:i + batch_size]
-                    batch_names = [all_tasks[j]["display_name"] for j in range(i, min(i + batch_size, len(all_tasks)))]
+                # PROCESSAR TASKS NATIVAS (instantâneo, sem API calls)
+                for task_data in native_tasks:
+                    data = task_data["native_data"]
                     
-                    status_text.text(f"A processar batch {i//batch_size + 1} ({len(batch)} páginas)...")
+                    record = {
+                        "TIPO": data.get("tipo", task_data["batch_type"]),  # TIPO extraído do DXF
+                        "Num. Desenho": data.get("num_desenho", "N/A"),
+                        "Titulo": data.get("titulo", "N/A"),
+                        "1ª Emissão": data.get("primeira_emissao", "-"),
+                        "Revisão": data.get("revisao", ""),           # Vazio se sem revisões
+                        "Data": data.get("data_revisao", ""),         # Vazio se sem revisões
+                        "Descrição": data.get("desc_revisao", ""),    # Vazio se sem revisões
+                        "Ficheiro": task_data["display_name"],
+                        "Obs": data.get("obs", ""),
+                        "_source": "DXF"  # Flag interna para filtrar visualização
+                    }
                     
-                    # Executar batch em paralelo
-                    results = await asyncio.gather(*batch, return_exceptions=True)
+                    new_records.append(record)
+                    completed += 1
+                    progress_bar.progress(completed / total_operations)
+                    status_text.text(f"✅ Nativo: {data.get('num_desenho', 'N/A')} ({completed}/{total_operations})")
+                
+                # PROCESSAR TASKS GEMINI (assíncronas com rate limiting)
+                if gemini_tasks:
+                    async_tasks = []
+                    for task_data in gemini_tasks:
+                        async_tasks.append(
+                            ask_gemini_async(
+                                task_data["image"],
+                                task_data["display_name"],
+                                rate_limiter,
+                                api_key
+                            )
+                        )
                     
-                    # Processar resultados
-                    for idx, result in enumerate(results):
-                        task_idx = i + idx
-                        task_info = all_tasks[task_idx]
+                    for i in range(0, len(async_tasks), batch_size):
+                        batch = async_tasks[i:i + batch_size]
                         
-                        # Desempacotar resultado (data, tokens)
-                        if isinstance(result, Exception):
-                            data = {"error": str(result), "num_desenho": "ERRO", "titulo": task_info["display_name"]}
-                            tokens = 0
-                        elif isinstance(result, tuple):
-                            data, tokens = result
-                            st.session_state.total_tokens += tokens
-                        else:
-                            data = result
-                            tokens = 0
+                        status_text.text(f"A processar batch Gemini {i//batch_size + 1} ({len(batch)} páginas)...")
                         
-                        record = {
-                            "TIPO": task_info["batch_type"],
-                            "Num. Desenho": data.get("num_desenho", "N/A"),
-                            "Titulo": data.get("titulo", "N/A"),
-                            "Revisão": data.get("revisao", "-"),
-                            "Data": data.get("data", "-"),
-                            "Ficheiro": task_info["display_name"],
-                            "Obs": data.get("obs", "")
-                        }
+                        # Executar batch em paralelo
+                        results = await asyncio.gather(*batch, return_exceptions=True)
                         
-                        if "error" in data:
-                            record["Obs"] = f"Erro IA: {data['error']}"
-                        
-                        new_records.append(record)
-                        completed += 1
-                        progress_bar.progress(completed / total_operations)
+                        # Processar resultados
+                        for idx, result in enumerate(results):
+                            task_idx = i + idx
+                            task_info = gemini_tasks[task_idx]
+                            
+                            # Desempacotar resultado (data, tokens)
+                            if isinstance(result, Exception):
+                                data = {"error": str(result), "num_desenho": "ERRO", "titulo": task_info["display_name"]}
+                                tokens = 0
+                            elif isinstance(result, tuple):
+                                data, tokens = result
+                                st.session_state.total_tokens += tokens
+                            else:
+                                data = result
+                                tokens = 0
+                            
+                            record = {
+                                "TIPO": task_info["batch_type"],
+                                "Num. Desenho": data.get("num_desenho", "N/A"),
+                                "Titulo": data.get("titulo", "N/A"),
+                                "1ª Emissão": "-",                          # PDF não tem este campo
+                                "Revisão": data.get("revisao", "-"),
+                                "Data": data.get("data", "-"),
+                                "Descrição": "-",                           # PDF não tem este campo
+                                "Ficheiro": task_info["display_name"],
+                                "Obs": data.get("obs", ""),
+                                "_source": "PDF"  # Flag interna
+                            }
+                            
+                            if "error" in data:
+                                record["Obs"] = f"Erro IA: {data['error']}"
+                            
+                            new_records.append(record)
+                            completed += 1
+                            progress_bar.progress(completed / total_operations)
                 
                 return new_records
             
@@ -1052,12 +1186,45 @@ with col_view:
         
         st.divider()
         
-        st.dataframe(
-            df, 
-            use_container_width=True,
-            column_config={"Ficheiro": st.column_config.TextColumn("Origem"), "Obs": st.column_config.TextColumn("Obs", width="small")},
-            hide_index=True
-        )
+        # Detectar se tem registos DXF (extracção nativa)
+        has_dxf = '_source' in df.columns and (df['_source'] == 'DXF').any()
+        has_pdf = '_source' in df.columns and (df['_source'] == 'PDF').any()
+        
+        if has_dxf and not has_pdf:
+            # VISUALIZAÇÃO DXF: Colunas específicas, valores centrados, ordenar por número
+            df_display = df[['TIPO', 'Num. Desenho', '1ª Emissão', 'Revisão', 'Data']].copy()
+            df_display = df_display.sort_values(by='Num. Desenho')
+            
+            st.dataframe(
+                df_display,
+                use_container_width=True,
+                column_config={
+                    "TIPO": st.column_config.TextColumn("TIPO", width="medium"),
+                    "Num. Desenho": st.column_config.TextColumn("Número de Desenho", width="medium"),
+                    "1ª Emissão": st.column_config.TextColumn("1ª Emissão", width="small"),
+                    "Revisão": st.column_config.TextColumn("Revisão", width="small"),
+                    "Data": st.column_config.TextColumn("Data Revisão", width="small")
+                },
+                hide_index=True
+            )
+        elif has_pdf and not has_dxf:
+            # VISUALIZAÇÃO PDF: Layout original (todas as colunas exceto _source)
+            df_display = df.drop(columns=['_source'], errors='ignore')
+            st.dataframe(
+                df_display, 
+                use_container_width=True,
+                column_config={"Ficheiro": st.column_config.TextColumn("Origem"), "Obs": st.column_config.TextColumn("Obs", width="small")},
+                hide_index=True
+            )
+        else:
+            # MODO MISTO: Mostrar todas as colunas (exceto _source)
+            df_display = df.drop(columns=['_source'], errors='ignore')
+            st.dataframe(
+                df_display,
+                use_container_width=True,
+                column_config={"Ficheiro": st.column_config.TextColumn("Origem"), "Obs": st.column_config.TextColumn("Obs", width="small")},
+                hide_index=True
+            )
         
         # BOTÕES DE EXPORTAÇÃO
         st.markdown("### 📥 Exportar")
