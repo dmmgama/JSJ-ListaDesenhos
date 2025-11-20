@@ -12,5 +12,13 @@ __pycache__/
 JSJ-ListaDesenhos-ContextPack-v1.md
 check_api.py
 
+# Ficheiros de trabalho/teste
+FicheirosTrabalho/
+*.dwg
+*.dxf
+*.log
+~$*.xlsx
+.claude/
+
 # Streamlit
 .streamlit/secrets.toml
