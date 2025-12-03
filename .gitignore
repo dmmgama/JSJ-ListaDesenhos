@@ -15,6 +15,7 @@ FicheirosTrabalho/
 *.dwg
 *.dxf
 *.log
+*.jsj.json
 ~$*.xlsx
 .claude/
 

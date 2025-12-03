@@ -148,6 +148,28 @@ if 'pending_tasks' not in st.session_state:
 if 'should_process' not in st.session_state:
     st.session_state.should_process = False
 
+# Campos globais para preenchimento em lote (batch fill)
+if 'global_fields' not in st.session_state:
+    st.session_state.global_fields = {
+        'PROJ_NUM': '',
+        'PROJ_NOME': '',
+        'FASE_PFIX': '',
+        'EMISSAO': '',
+        'LAYOUT': '',
+        'ELEMENTO': '',
+        'DWG_SOURCE': '',
+        'ID_CAD': ''
+    }
+
+# Lista de colunas normalizadas (ordem exata para exportação)
+COLUNAS_NORMALIZADAS = [
+    'PROJ_NUM', 'PROJ_NOME', 'CLIENTE', 'OBRA', 'LOCALIZACAO', 'ESPECIALIDADE',
+    'PROJETOU', 'FASE', 'FASE_PFIX', 'EMISSAO', 'DATA', 'PFIX', 'LAYOUT',
+    'DES_NUM', 'TIPO', 'ELEMENTO', 'TITULO', 'REV_A', 'DATA_A', 'DESC_A',
+    'REV_B', 'DATA_B', 'DESC_B', 'REV_C', 'DATA_C', 'DESC_C', 'REV_D',
+    'DATA_D', 'DESC_D', 'REV_E', 'DATA_E', 'DESC_E', 'DWG_SOURCE', 'ID_CAD'
+]
+
 # --- BARRA LATERAL (CONFIGURAÇÃO) ---
 with st.sidebar:
     st.header("⚙️ Configuração")
@@ -542,21 +564,21 @@ def create_pdf_export(df):
         elements.append(Paragraph(f"TIPO: {tipo}", subtitle_style))
         elements.append(Spacer(1, 0.3*cm))
         
-        # Preparar dados da tabela
-        table_data = [['Nº Desenho', 'Título', 'Rev', 'Data', 'Ficheiro', 'Obs']]
+        # Preparar dados da tabela (colunas normalizadas)
+        table_data = [['Nº Desenho', 'Título', 'Rev', 'Data', 'Cliente', 'Obra']]
         
         for _, row in df_tipo.iterrows():
             table_data.append([
-                str(row['Num. Desenho']),
-                str(row['Titulo'])[:50] + '...' if len(str(row['Titulo'])) > 50 else str(row['Titulo']),
-                str(row['Revisão']),
-                str(row['Data']),
-                str(row['Ficheiro'])[:30] + '...' if len(str(row['Ficheiro'])) > 30 else str(row['Ficheiro']),
-                str(row['Obs'])[:30] + '...' if len(str(row['Obs'])) > 30 else str(row['Obs'])
+                str(row.get('DES_NUM', '')),
+                str(row.get('TITULO', ''))[:50] + '...' if len(str(row.get('TITULO', ''))) > 50 else str(row.get('TITULO', '')),
+                str(row.get('REV_A', '')),
+                str(row.get('DATA', '')),
+                str(row.get('CLIENTE', ''))[:25] + '...' if len(str(row.get('CLIENTE', ''))) > 25 else str(row.get('CLIENTE', '')),
+                str(row.get('OBRA', ''))[:25] + '...' if len(str(row.get('OBRA', ''))) > 25 else str(row.get('OBRA', ''))
             ])
         
         # Criar tabela
-        table = Table(table_data, colWidths=[3.5*cm, 6*cm, 1.5*cm, 2*cm, 5*cm, 4*cm])
+        table = Table(table_data, colWidths=[3.5*cm, 6*cm, 1.5*cm, 2*cm, 4*cm, 4*cm])
         
         # Estilo da tabela
         table.setStyle(TableStyle([
@@ -657,58 +679,77 @@ def _ask_gemini_sync(image, file_context, api_key_param):
 
     ╔═══════════════════════════════════════════════════════════════════╗
     ║ REGRA DE OURO #1: IGNORA COMPLETAMENTE O NOME DO FICHEIRO        ║
-    ║ REGRA DE OURO #2: A TABELA DE REVISÕES É A FONTE DA VERDADE      ║
+    ║ REGRA DE OURO #2: EXTRAI TODOS OS CAMPOS VISÍVEIS NA LEGENDA     ║
+    ║ REGRA DE OURO #3: EXTRAI TODAS AS REVISÕES (A, B, C, D, E)       ║
     ╚═══════════════════════════════════════════════════════════════════╝
 
-    📋 PASSO A PASSO (SEGUE RIGOROSAMENTE):
+    📋 CAMPOS A EXTRAIR DA LEGENDA:
 
-    1️⃣ LOCALIZAR A LEGENDA (geralmente canto inferior direito):
-       - Procura o campo "Nº DESENHO" ou "DESENHO Nº" ou similar
-       - Extrai o NÚMERO escrito nesse campo (ex: "2025-EST-001")
-       - Extrai o TÍTULO do desenho
+    1️⃣ INFORMAÇÃO DO PROJETO (procura na legenda):
+       - CLIENTE: Nome do cliente/dono de obra
+       - OBRA: Nome/descrição da obra
+       - LOCALIZACAO: Local da obra (cidade, morada, etc)
+       - ESPECIALIDADE: Tipo de especialidade (ex: "ESTRUTURA E FUNDAÇÕES", "ARQUITECTURA")
+       - PROJETOU: Nome de quem projetou/autor
+       - FASE: Fase do projeto (ex: "LIC", "EXE", "PROJ")
 
-    2️⃣ LOCALIZAR A TABELA DE REVISÕES (geralmente acima da legenda):
-       - Procura uma TABELA com colunas tipo: REV | DATA | DESCRIÇÃO/ALTERAÇÃO
-       - Formato comum: linhas horizontais com células preenchidas
-       - Pode estar dentro de um rectângulo/moldura separada
+    2️⃣ INFORMAÇÃO DO DESENHO:
+       - DATA: Data base/1ª emissão do desenho
+       - TIPO: Tipo de desenho (ex: "Betão Armado", "Dimensionamento", "Pormenor")
+       - TITULO: Título/descrição do desenho
+       - PFIX: Prefixo do número do desenho (ex: "EST", "BA", "DIM")
+       - NUM: Número sequencial do desenho (ex: "001", "15")
+       - R: Revisão atual (letra A-Z ou vazio se 1ª emissão)
 
-    3️⃣ IDENTIFICAR A REVISÃO MAIS RECENTE:
-       ⚠️ ATENÇÃO: Esta é a parte MAIS IMPORTANTE!
-
-       SE a tabela tem linhas preenchidas (ex: A, B, C):
-       ┌─────────────────────────────────────────────┐
-       │ REV │   DATA    │      ALTERAÇÃO           │
+    3️⃣ TABELA DE REVISÕES (EXTRAIR TODAS AS LINHAS A até E):
+       Procura a tabela de revisões e extrai CADA linha separadamente:
+       ┌─────────────────────────────────────────────────────┐
+       │ REV │   DATA    │      DESCRIÇÃO           │
        ├─────┼───────────┼──────────────────────────┤
-       │  A  │ 10/01/2025│ Primeira emissão         │ ← NÃO usar esta
-       │  B  │ 15/02/2025│ Correcção de medidas     │ ← NÃO usar esta
-       │  C  │ 20/03/2025│ Ajuste de armaduras      │ ← USAR ESTA! ✓
+       │  A  │ 10/01/2025│ Primeira emissão         │ → REV_A, DATA_A, DESC_A
+       │  B  │ 15/02/2025│ Correcção de medidas     │ → REV_B, DATA_B, DESC_B
+       │  C  │ 20/03/2025│ Ajuste de armaduras      │ → REV_C, DATA_C, DESC_C
+       │  D  │           │                          │ → REV_D, DATA_D, DESC_D (vazios)
+       │  E  │           │                          │ → REV_E, DATA_E, DESC_E (vazios)
        └─────┴───────────┴──────────────────────────┘
-
-       → A revisão mais recente é "C" (letra mais avançada)
-       → A data a extrair é "20/03/2025" (data da LINHA C)
-       → 🚫 NÃO USES a data base da legenda!
-       → 🚫 NÃO USES a data do campo "DATA:" da legenda principal!
-
-       SE a tabela estiver COMPLETAMENTE VAZIA (sem linhas preenchidas):
-       → Revisão = "0" (primeira emissão)
-       → Neste caso SIM, usa a data base do campo "DATA:" da legenda principal
-
-    4️⃣ VALIDAÇÃO FINAL:
-       - Confirma que a data extraída corresponde à linha da revisão mais avançada
-       - Se houver dúvida, menciona na obs
 
     📤 RETORNA APENAS JSON VÁLIDO (sem comentários):
     {
-        "num_desenho": "string - Número escrito no campo da legenda",
-        "titulo": "string - Título do desenho",
-        "revisao": "string - Letra mais avançada da tabela OU '0' se vazia",
-        "data": "string - Data DD/MM/YYYY da LINHA dessa revisão (ou data base se Rev 0)",
+        "CLIENTE": "string - Nome do cliente ou vazio",
+        "OBRA": "string - Nome da obra ou vazio",
+        "LOCALIZACAO": "string - Localização ou vazio",
+        "ESPECIALIDADE": "string - Especialidade ou vazio",
+        "PROJETOU": "string - Quem projetou ou vazio",
+        "FASE": "string - Fase do projeto ou vazio",
+        "DATA": "string - Data base/1ª emissão ou vazio",
+        "TIPO": "string - Tipo de desenho ou vazio",
+        "TITULO": "string - Título do desenho",
+        "PFIX": "string - Prefixo do número ou vazio",
+        "NUM": "string - Número do desenho",
+        "R": "string - Revisão atual (letra) ou vazio",
+        "REV_A": "string - 'A' se preenchida, senão vazio",
+        "DATA_A": "string - Data da revisão A ou vazio",
+        "DESC_A": "string - Descrição da revisão A ou vazio",
+        "REV_B": "string - 'B' se preenchida, senão vazio",
+        "DATA_B": "string - Data da revisão B ou vazio",
+        "DESC_B": "string - Descrição da revisão B ou vazio",
+        "REV_C": "string - 'C' se preenchida, senão vazio",
+        "DATA_C": "string - Data da revisão C ou vazio",
+        "DESC_C": "string - Descrição da revisão C ou vazio",
+        "REV_D": "string - 'D' se preenchida, senão vazio",
+        "DATA_D": "string - Data da revisão D ou vazio",
+        "DESC_D": "string - Descrição da revisão D ou vazio",
+        "REV_E": "string - 'E' se preenchida, senão vazio",
+        "DATA_E": "string - Data da revisão E ou vazio",
+        "DESC_E": "string - Descrição da revisão E ou vazio",
         "obs": "string - Avisos se ilegível/em falta, senão vazio"
     }
 
-    ⚠️ VERIFICAÇÃO: Antes de retornar, confirma mentalmente:
-    - "A data que estou a retornar vem da LINHA da revisão mais recente?"
-    - "Ou vem do campo DATA base porque a tabela está vazia?"
+    ⚠️ NOTAS IMPORTANTES:
+    - Se um campo não for visível ou legível, deixa VAZIO (string vazia "")
+    - Para revisões não preenchidas na tabela, deixa os 3 campos vazios
+    - O campo R deve ter a letra da revisão mais recente (última preenchida)
+    - Datas podem estar em qualquer formato (DD/MM/YYYY, YYYY.MM.DD, texto)
     """
 
     last_error = ""
@@ -820,88 +861,177 @@ with col_input:
         batch_type = tipo_preset
     
     # Tipos de ficheiro suportados
-    file_types = ["pdf"]
+    file_types = ["pdf", "json"]  # JSON para ficheiros LISP AutoCAD
     if DWG_SUPPORT:
         file_types.extend(["dwg", "dxf"])
-        st.caption("✅ Suporte DWG/DXF ativo")
+        st.caption("✅ Suporte DWG/DXF/JSON ativo")
     else:
-        st.caption("⚠️ Instala ezdxf para suportar DWG: `pip install ezdxf matplotlib`")
+        st.caption("✅ Suporte PDF/JSON | ⚠️ Instala ezdxf para DWG: `pip install ezdxf matplotlib`")
     
     # Inicializar key do uploader se não existir
     if 'uploader_key' not in st.session_state:
         st.session_state.uploader_key = 0
     
+    # --- SECÇÃO: CAMPOS GLOBAIS (BATCH FILL) ---
+    st.markdown("#### 🏢 Dados do Projeto (aplicados a todos)")
+    with st.expander("📝 Preencher campos globais", expanded=False):
+        st.caption("Estes valores serão aplicados a TODAS as linhas da tabela de saída")
+        
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            st.session_state.global_fields['PROJ_NUM'] = st.text_input(
+                "PROJ_NUM", 
+                value=st.session_state.global_fields.get('PROJ_NUM', ''),
+                placeholder="Ex: 2024-001",
+                help="Número do projeto"
+            )
+            st.session_state.global_fields['PROJ_NOME'] = st.text_input(
+                "PROJ_NOME", 
+                value=st.session_state.global_fields.get('PROJ_NOME', ''),
+                placeholder="Ex: Edifício ABC",
+                help="Nome do projeto"
+            )
+            st.session_state.global_fields['FASE_PFIX'] = st.text_input(
+                "FASE_PFIX", 
+                value=st.session_state.global_fields.get('FASE_PFIX', ''),
+                placeholder="Ex: EE",
+                help="Prefixo da fase"
+            )
+            st.session_state.global_fields['EMISSAO'] = st.text_input(
+                "EMISSAO", 
+                value=st.session_state.global_fields.get('EMISSAO', ''),
+                placeholder="Ex: 01",
+                help="Número da emissão"
+            )
+        with col_g2:
+            st.session_state.global_fields['LAYOUT'] = st.text_input(
+                "LAYOUT", 
+                value=st.session_state.global_fields.get('LAYOUT', ''),
+                placeholder="Ex: A1",
+                help="Formato do layout"
+            )
+            st.session_state.global_fields['ELEMENTO'] = st.text_input(
+                "ELEMENTO", 
+                value=st.session_state.global_fields.get('ELEMENTO', ''),
+                placeholder="Ex: Laje Piso 1",
+                help="Elemento estrutural"
+            )
+            st.session_state.global_fields['DWG_SOURCE'] = st.text_input(
+                "DWG_SOURCE", 
+                value=st.session_state.global_fields.get('DWG_SOURCE', ''),
+                placeholder="Ex: projeto_v1.dwg",
+                help="Ficheiro DWG de origem"
+            )
+            st.session_state.global_fields['ID_CAD'] = st.text_input(
+                "ID_CAD", 
+                value=st.session_state.global_fields.get('ID_CAD', ''),
+                placeholder="Ex: CAD-001",
+                help="Identificador CAD"
+            )
+    
+    st.divider()
+    
+    # Seletor de tipo de ficheiro
+    st.markdown("#### 📁 Tipo de Ficheiro")
+    file_source = st.radio(
+        "Escolhe o formato:",
+        ["📄 PDF", "📋 JSON (LISP)", "🗂️ DWG/DXF"],
+        horizontal=True,
+        help="Seleciona o formato dos ficheiros que vais carregar"
+    )
+    
+    # Determinar tipos de ficheiro aceites
+    if file_source == "📄 PDF":
+        accepted_types = ['pdf']
+        help_text = "Carrega ficheiros PDF dos desenhos"
+    elif file_source == "📋 JSON (LISP)":
+        accepted_types = ['json']
+        help_text = "Carrega o ficheiro JSON gerado pela LISP EXTRATOR_LEGENDA_JSJ.lsp no AutoCAD"
+    else:  # DWG/DXF
+        accepted_types = ['dwg', 'dxf'] if DWG_SUPPORT else []
+        help_text = "Carrega ficheiros DWG ou DXF nativos (cada layout = 1 desenho)"
+    
     uploaded_files = st.file_uploader(
         "📄 Carregar Ficheiros", 
-        type=file_types, 
+        type=accepted_types, 
         accept_multiple_files=True,
-        help="Suporta PDF e DWG/DXF (cada layout = 1 desenho)",
+        help=help_text,
         key=f"file_uploader_{st.session_state.uploader_key}"
     )
     
     # Botão de processar
-    process_btn = st.button("⚡ Processar Lote", disabled=(not uploaded_files or not batch_type))
+    # JSON não precisa de batch_type (vem dentro do JSON)
+    process_btn = st.button(
+        "⚡ Processar Lote", 
+        disabled=(not uploaded_files or (not batch_type and file_source != "📋 JSON (LISP)"))
+    )
 
     # LÓGICA DE VALIDAÇÃO DE CROP
-    # Se checkbox NÃO marcada → processa diretamente
-    # Se checkbox MARCADA → mostra preview e pede validação
+    # JSON sempre processa diretamente (sem crop)
+    # PDF: se checkbox marcada → mostra preview, senão → processa direto
+    # DWG/DXF: processa diretamente (sem preview ainda)
 
     if process_btn:
         if not api_key:
             st.error("⚠️ Falta a API Key na barra lateral!")
-        elif not show_crop_preview:
-            # Processar diretamente sem validação
-            st.session_state.crop_validated = True
-            st.session_state.should_process = True
-            st.session_state.pending_tasks = uploaded_files
-            st.rerun()
         else:
-            # Mostrar preview do crop do primeiro desenho para validação
-            st.info("### ✂️ Validação de Crop")
-            st.caption("Valida a área de crop antes de processar todos os desenhos")
-
-            # Extrair primeira página do primeiro ficheiro para preview
-            first_file = uploaded_files[0]
-            file_ext = first_file.name.lower().split('.')[-1]
-
-            try:
-                if file_ext == 'pdf':
-                    bytes_data = first_file.read()
-                    doc = fitz.open(stream=bytes_data, filetype="pdf")
-                    preview_img = get_image_from_page(doc, 0, crop_preset)
-                    doc.close()
-
-                    st.image(preview_img, caption=f"Preview: {first_file.name} (Página 1) - Crop: {crop_preset}", use_container_width=True)
-                    st.caption("⬆️ Esta é a área que a IA vai analisar em TODOS os desenhos")
-                    st.warning("⚠️ **ATENÇÃO:** Verifica se a TABELA DE REVISÕES está completamente visível. Se não estiver, ajusta o crop na barra lateral.")
-
-                    col_val, col_alt = st.columns(2)
-                    with col_val:
-                        if st.button("✅ Validar e Processar", type="primary", use_container_width=True, key="btn_validar"):
-                            st.session_state.crop_validated = True
-                            st.session_state.should_process = True
-                            st.session_state.pending_tasks = uploaded_files
-                            st.rerun()
-                    with col_alt:
-                        if st.button("🔄 Alterar Crop", use_container_width=True, key="btn_alterar"):
-                            st.info("👈 Ajusta a configuração de crop na barra lateral e tenta novamente")
-
-                elif file_ext in ['dwg', 'dxf'] and DWG_SUPPORT:
-                    st.warning("⚠️ Preview de crop para DWG ainda não implementado. A processar diretamente...")
+            # JSON LISP: processar diretamente
+            if file_source == "📋 JSON (LISP)":
+                st.session_state.crop_validated = True
+                st.session_state.should_process = True
+                st.session_state.pending_tasks = uploaded_files
+                st.rerun()
+            
+            # PDF: verificar crop preview
+            elif file_source == "📄 PDF":
+                if not show_crop_preview:
+                    # Processar diretamente sem validação
                     st.session_state.crop_validated = True
                     st.session_state.should_process = True
                     st.session_state.pending_tasks = uploaded_files
                     st.rerun()
                 else:
-                    st.error(f"Tipo de ficheiro não suportado: {file_ext}")
+                    # Mostrar preview do crop do primeiro desenho para validação
+                    st.info("### ✂️ Validação de Crop")
+                    st.caption("Valida a área de crop antes de processar todos os desenhos")
 
-            except Exception as e:
-                st.error(f"Erro ao gerar preview: {e}")
-                if st.button("Continuar mesmo assim", key="btn_continuar"):
-                    st.session_state.crop_validated = True
-                    st.session_state.should_process = True
-                    st.session_state.pending_tasks = uploaded_files
-                    st.rerun()
+                    first_file = uploaded_files[0]
+                    
+                    try:
+                        bytes_data = first_file.read()
+                        doc = fitz.open(stream=bytes_data, filetype="pdf")
+                        preview_img = get_image_from_page(doc, 0, crop_preset)
+                        doc.close()
+
+                        st.image(preview_img, caption=f"Preview: {first_file.name} (Página 1) - Crop: {crop_preset}", use_container_width=True)
+                        st.caption("⬆️ Esta é a área que a IA vai analisar em TODOS os desenhos")
+                        st.warning("⚠️ **ATENÇÃO:** Verifica se a TABELA DE REVISÕES está completamente visível. Se não estiver, ajusta o crop na barra lateral.")
+
+                        col_val, col_alt = st.columns(2)
+                        with col_val:
+                            if st.button("✅ Validar e Processar", type="primary", use_container_width=True, key="btn_validar"):
+                                st.session_state.crop_validated = True
+                                st.session_state.should_process = True
+                                st.session_state.pending_tasks = uploaded_files
+                                st.rerun()
+                        with col_alt:
+                            if st.button("🔄 Alterar Crop", use_container_width=True, key="btn_alterar"):
+                                st.info("👈 Ajusta a configuração de crop na barra lateral e tenta novamente")
+                    
+                    except Exception as e:
+                        st.error(f"Erro ao gerar preview: {e}")
+                        if st.button("Continuar mesmo assim", key="btn_continuar"):
+                            st.session_state.crop_validated = True
+                            st.session_state.should_process = True
+                            st.session_state.pending_tasks = uploaded_files
+                            st.rerun()
+            
+            # DWG/DXF: processar diretamente
+            elif file_source == "🗂️ DWG/DXF":
+                st.session_state.crop_validated = True
+                st.session_state.should_process = True
+                st.session_state.pending_tasks = uploaded_files
+                st.rerun()
 
     # PROCESSAMENTO PRINCIPAL (após validação ou direto)
     # Usar pending_tasks em vez de uploaded_files para evitar perda após rerun
@@ -921,8 +1051,149 @@ with col_input:
             for file in files_to_process:
                 file_ext = file.name.lower().split('.')[-1]
                 
+                st.write(f"🔍 DEBUG: Ficheiro={file.name}, Extensão={file_ext}, Tipo Selecionado={file_source}")
+                
                 try:
-                    if file_ext == 'pdf':
+                    if file_ext == 'json':
+                        # Processar JSON (ficheiro LISP AutoCAD)
+                        status_text.text(f"A processar JSON LISP: {file.name}...")
+                        
+                        try:
+                            json_data = json.loads(file.read().decode('utf-8'))
+                            
+                            st.info(f"📋 JSON carregado: {len(json_data) if isinstance(json_data, list) else 'formato dict'} registos")
+                            
+                            # SUPORTE PARA DOIS FORMATOS DE JSON:
+                            # Formato 1: {"desenhos": [...], "metadata": {...}} (LISP antiga)
+                            # Formato 2: [{atributos: {...}}, ...] (LISP nova)
+                            
+                            desenhos = []
+                            metadata = {}
+                            
+                            # Detectar formato
+                            if isinstance(json_data, list):
+                                # Formato 2: Array direto de desenhos com atributos aninhados
+                                for idx, item in enumerate(json_data):
+                                    # Extrair atributos (estrutura aninhada)
+                                    attrs = item.get('atributos', {})
+                                    
+                                    # Mapear campos necessários
+                                    tipo = attrs.get('TIPO', '').strip()
+                                    num_desenho = attrs.get('DES_NUM', '').strip()
+                                    titulo = attrs.get('TITULO', '').strip()
+                                    primeira_emissao = attrs.get('DATA', '').strip()
+                                    
+                                    # Normalizar data se estiver no formato YYYY.MM.DD
+                                    if '.' in primeira_emissao and len(primeira_emissao.split('.')) == 3:
+                                        partes = primeira_emissao.split('.')
+                                        if len(partes[0]) == 4:  # Formato YYYY.MM.DD
+                                            primeira_emissao = f"{partes[2]}/{partes[1]}/{partes[0]}"
+                                    
+                                    # Histórico de revisões: ordem crescente A→E
+                                    revisao_letra = ''
+                                    revisao_data = ''
+                                    revisao_desc = ''
+                                    
+                                    for rev in ['A', 'B', 'C', 'D', 'E']:
+                                        rev_tag = attrs.get(f'REV_{rev}', '').strip()
+                                        if rev_tag:
+                                            revisao_letra = rev
+                                            revisao_data = attrs.get(f'DATA_{rev}', '').strip()
+                                            revisao_desc = attrs.get(f'DESC_{rev}', '').strip()
+                                            
+                                            # Normalizar data de revisão
+                                            if '.' in revisao_data and len(revisao_data.split('.')) == 3:
+                                                partes = revisao_data.split('.')
+                                                if len(partes[0]) == 4:
+                                                    revisao_data = f"{partes[2]}/{partes[1]}/{partes[0]}"
+                                    
+                                    layout_info = item.get('layout_tab', f'Layout {idx+1}')
+                                    bloco_num = item.get('id_desenho', idx + 1)
+                                    
+                                    # Para JSON, usar tipo do próprio JSON (não precisa de batch_type)
+                                    tipo_final = tipo or (batch_type.upper() if batch_type else 'N/A')
+                                    
+                                    all_tasks.append({
+                                        "native_data": {
+                                            'tipo': tipo_final,
+                                            'num_desenho': num_desenho or 'N/A',
+                                            'titulo': titulo or 'Sem título',
+                                            'primeira_emissao': primeira_emissao or 'N/A',
+                                            'revisao': revisao_letra,
+                                            'data_revisao': revisao_data,
+                                            'desc_revisao': revisao_desc,
+                                            'obs': f'Extração LISP AutoCAD (Layout: {layout_info})'
+                                        },
+                                        "display_name": f"{file.name.replace('.json', '')} (Layout: {layout_info}, Bloco {bloco_num})",
+                                        "batch_type": tipo_final,
+                                        "is_native": True
+                                    })
+                                    total_operations += 1
+                                
+                                st.success(f"✅ {total_operations} desenhos extraídos do JSON (formato array)")
+                                
+                                metadata = {
+                                    'dwg_file': file.name,
+                                    'total_desenhos': len(json_data)
+                                }
+                                
+                            elif isinstance(json_data, dict) and 'desenhos' in json_data:
+                                # Formato 1: Estrutura com wrapper {"desenhos": [...]}
+                                desenhos_raw = json_data['desenhos']
+                                metadata = json_data.get('metadata', {})
+                                
+                                for idx, desenho in enumerate(desenhos_raw):
+                                    tipo = desenho.get('TIPO', '').strip()
+                                    num_desenho = desenho.get('DES_NUM', '').strip()
+                                    titulo = desenho.get('TITULO', '').strip()
+                                    primeira_emissao = desenho.get('DATA', '').strip()
+                                    
+                                    revisao_letra = ''
+                                    revisao_data = ''
+                                    revisao_desc = ''
+                                    
+                                    for rev in ['A', 'B', 'C', 'D', 'E']:
+                                        rev_tag = desenho.get(f'REV_{rev}', '').strip()
+                                        if rev_tag:
+                                            revisao_letra = rev
+                                            revisao_data = desenho.get(f'DATA_{rev}', '').strip()
+                                            revisao_desc = desenho.get(f'DESC_{rev}', '').strip()
+                                    
+                                    layout_info = desenho.get('LAYOUT', 'Layout desconhecido')
+                                    bloco_num = desenho.get('BLOCO_NUM', idx + 1)
+                                    
+                                    # Para JSON, usar tipo do próprio JSON (não precisa de batch_type)
+                                    tipo_final = tipo or (batch_type.upper() if batch_type else 'N/A')
+                                    
+                                    all_tasks.append({
+                                        "native_data": {
+                                            'tipo': tipo_final,
+                                            'num_desenho': num_desenho or 'N/A',
+                                            'titulo': titulo or 'Sem título',
+                                            'primeira_emissao': primeira_emissao or 'N/A',
+                                            'revisao': revisao_letra,
+                                            'data_revisao': revisao_data,
+                                            'desc_revisao': revisao_desc,
+                                            'obs': f'Extração LISP AutoCAD (Layout: {layout_info})'
+                                        },
+                                        "display_name": f"{metadata.get('dwg_file', file.name)} (Layout: {layout_info}, Bloco {bloco_num})",
+                                        "batch_type": tipo_final,
+                                        "is_native": True
+                                    })
+                                    total_operations += 1
+                            else:
+                                st.error(f"❌ {file.name}: Formato JSON não reconhecido")
+                                continue
+                            
+                            status_text.text(f"JSON: {total_operations} desenhos processados de {metadata.get('dwg_file', file.name)}")
+                            logger.info(f"✅ JSON LISP processado: {total_operations} desenhos de {file.name}")
+                            
+                        except json.JSONDecodeError as e:
+                            st.error(f"❌ Erro ao ler JSON {file.name}: {str(e)}")
+                            logger.error(f"JSON decode error: {file.name} - {e}")
+                            continue
+                    
+                    elif file_ext == 'pdf':
                         # Processar PDF
                         bytes_data = file.read()
                         doc = fitz.open(stream=bytes_data, filetype="pdf")
@@ -1039,18 +1310,55 @@ with col_input:
                 # PROCESSAR TASKS NATIVAS (instantâneo, sem API calls)
                 for task_data in native_tasks:
                     data = task_data["native_data"]
+                    gf = st.session_state.global_fields  # Campos globais
                     
                     record = {
-                        "TIPO": data.get("tipo", task_data["batch_type"]),  # TIPO extraído do DXF
-                        "Num. Desenho": data.get("num_desenho", "N/A"),
-                        "Titulo": data.get("titulo", "N/A"),
-                        "1ª Emissão": data.get("primeira_emissao", "-"),
-                        "Revisão": data.get("revisao", ""),           # Vazio se sem revisões
-                        "Data": data.get("data_revisao", ""),         # Vazio se sem revisões
-                        "Descrição": data.get("desc_revisao", ""),    # Vazio se sem revisões
-                        "Ficheiro": task_data["display_name"],
-                        "Obs": data.get("obs", ""),
-                        "_source": "DXF"  # Flag interna para filtrar visualização
+                        # Campos globais (preenchidos pelo utilizador)
+                        "PROJ_NUM": gf.get('PROJ_NUM', ''),
+                        "PROJ_NOME": gf.get('PROJ_NOME', ''),
+                        # Campos extraídos (normalizados)
+                        "CLIENTE": data.get("cliente", ""),
+                        "OBRA": data.get("obra", ""),
+                        "LOCALIZACAO": data.get("localizacao", ""),
+                        "ESPECIALIDADE": data.get("especialidade", ""),
+                        "PROJETOU": data.get("projetou", ""),
+                        "FASE": data.get("fase", ""),
+                        # Campos globais (preenchidos pelo utilizador)
+                        "FASE_PFIX": gf.get('FASE_PFIX', ''),
+                        "EMISSAO": gf.get('EMISSAO', ''),
+                        # Campos extraídos
+                        "DATA": data.get("primeira_emissao", "-"),
+                        "PFIX": data.get("pfix", ""),
+                        # Campos globais
+                        "LAYOUT": gf.get('LAYOUT', ''),
+                        # Campos extraídos
+                        "DES_NUM": data.get("num_desenho", "N/A"),
+                        "TIPO": data.get("tipo", task_data["batch_type"]),
+                        # Campos globais
+                        "ELEMENTO": gf.get('ELEMENTO', ''),
+                        # Campos extraídos
+                        "TITULO": data.get("titulo", "N/A"),
+                        # Revisões A-E
+                        "REV_A": data.get("rev_a", ""),
+                        "DATA_A": data.get("data_a", ""),
+                        "DESC_A": data.get("desc_a", ""),
+                        "REV_B": data.get("rev_b", ""),
+                        "DATA_B": data.get("data_b", ""),
+                        "DESC_B": data.get("desc_b", ""),
+                        "REV_C": data.get("rev_c", ""),
+                        "DATA_C": data.get("data_c", ""),
+                        "DESC_C": data.get("desc_c", ""),
+                        "REV_D": data.get("rev_d", ""),
+                        "DATA_D": data.get("data_d", ""),
+                        "DESC_D": data.get("desc_d", ""),
+                        "REV_E": data.get("rev_e", ""),
+                        "DATA_E": data.get("data_e", ""),
+                        "DESC_E": data.get("desc_e", ""),
+                        # Campos globais
+                        "DWG_SOURCE": gf.get('DWG_SOURCE', ''),
+                        "ID_CAD": gf.get('ID_CAD', ''),
+                        # Flag interna (não exportada)
+                        "_source": "DXF"
                     }
                     
                     new_records.append(record)
@@ -1086,7 +1394,7 @@ with col_input:
                             
                             # Desempacotar resultado (data, tokens)
                             if isinstance(result, Exception):
-                                data = {"error": str(result), "num_desenho": "ERRO", "titulo": task_info["display_name"]}
+                                data = {"error": str(result), "NUM": "ERRO", "TITULO": task_info["display_name"]}
                                 tokens = 0
                             elif isinstance(result, tuple):
                                 data, tokens = result
@@ -1095,21 +1403,71 @@ with col_input:
                                 data = result
                                 tokens = 0
                             
+                            # Construir número do desenho a partir de PFIX + NUM
+                            pfix = data.get("PFIX", "").strip()
+                            num = data.get("NUM", "").strip()
+                            if pfix and num:
+                                num_desenho = f"{pfix}-{num}"
+                            elif num:
+                                num_desenho = num
+                            else:
+                                num_desenho = "N/A"
+                            
+                            # Usar TIPO do JSON se disponível, senão batch_type
+                            tipo_extraido = data.get("TIPO", "").strip()
+                            gf = st.session_state.global_fields  # Campos globais
+                            
                             record = {
-                                "TIPO": task_info["batch_type"],
-                                "Num. Desenho": data.get("num_desenho", "N/A"),
-                                "Titulo": data.get("titulo", "N/A"),
-                                "1ª Emissão": "-",                          # PDF não tem este campo
-                                "Revisão": data.get("revisao", "-"),
-                                "Data": data.get("data", "-"),
-                                "Descrição": "-",                           # PDF não tem este campo
-                                "Ficheiro": task_info["display_name"],
-                                "Obs": data.get("obs", ""),
-                                "_source": "PDF"  # Flag interna
+                                # Campos globais (preenchidos pelo utilizador)
+                                "PROJ_NUM": gf.get('PROJ_NUM', ''),
+                                "PROJ_NOME": gf.get('PROJ_NOME', ''),
+                                # Campos extraídos (normalizados)
+                                "CLIENTE": data.get("CLIENTE", ""),
+                                "OBRA": data.get("OBRA", ""),
+                                "LOCALIZACAO": data.get("LOCALIZACAO", ""),
+                                "ESPECIALIDADE": data.get("ESPECIALIDADE", ""),
+                                "PROJETOU": data.get("PROJETOU", ""),
+                                "FASE": data.get("FASE", ""),
+                                # Campos globais (preenchidos pelo utilizador)
+                                "FASE_PFIX": gf.get('FASE_PFIX', ''),
+                                "EMISSAO": gf.get('EMISSAO', ''),
+                                # Campos extraídos
+                                "DATA": data.get("DATA", "-"),
+                                "PFIX": pfix,
+                                # Campos globais
+                                "LAYOUT": gf.get('LAYOUT', ''),
+                                # Campos extraídos
+                                "DES_NUM": num_desenho,
+                                "TIPO": tipo_extraido or task_info["batch_type"],
+                                # Campos globais
+                                "ELEMENTO": gf.get('ELEMENTO', ''),
+                                # Campos extraídos
+                                "TITULO": data.get("TITULO", "N/A"),
+                                # Todas as revisões
+                                "REV_A": data.get("REV_A", ""),
+                                "DATA_A": data.get("DATA_A", ""),
+                                "DESC_A": data.get("DESC_A", ""),
+                                "REV_B": data.get("REV_B", ""),
+                                "DATA_B": data.get("DATA_B", ""),
+                                "DESC_B": data.get("DESC_B", ""),
+                                "REV_C": data.get("REV_C", ""),
+                                "DATA_C": data.get("DATA_C", ""),
+                                "DESC_C": data.get("DESC_C", ""),
+                                "REV_D": data.get("REV_D", ""),
+                                "DATA_D": data.get("DATA_D", ""),
+                                "DESC_D": data.get("DESC_D", ""),
+                                "REV_E": data.get("REV_E", ""),
+                                "DATA_E": data.get("DATA_E", ""),
+                                "DESC_E": data.get("DESC_E", ""),
+                                # Campos globais
+                                "DWG_SOURCE": gf.get('DWG_SOURCE', ''),
+                                "ID_CAD": gf.get('ID_CAD', ''),
+                                # Flag interna (não exportada)
+                                "_source": "PDF"
                             }
                             
                             if "error" in data:
-                                record["Obs"] = f"Erro IA: {data['error']}"
+                                record["_obs"] = f"Erro IA: {data['error']}"
                             
                             new_records.append(record)
                             completed += 1
@@ -1177,12 +1535,12 @@ with col_view:
             ordem_completa = st.session_state.ordem_customizada + [t for t in tipos_unicos if t not in st.session_state.ordem_customizada]
             ordem_map = {tipo: idx for idx, tipo in enumerate(ordem_completa)}
             df['_ordem'] = df['TIPO'].map(ordem_map)
-            df = df.sort_values(by=['_ordem', 'Num. Desenho'])
+            df = df.sort_values(by=['_ordem', 'DES_NUM'])
             df = df.drop('_ordem', axis=1)
         else:
             # Ordem alfabética padrão
-            if "Num. Desenho" in df.columns and "TIPO" in df.columns:
-                df = df.sort_values(by=["TIPO", "Num. Desenho"])
+            if "DES_NUM" in df.columns and "TIPO" in df.columns:
+                df = df.sort_values(by=["TIPO", "DES_NUM"])
         
         st.divider()
         
@@ -1190,99 +1548,81 @@ with col_view:
         has_dxf = '_source' in df.columns and (df['_source'] == 'DXF').any()
         has_pdf = '_source' in df.columns and (df['_source'] == 'PDF').any()
         
-        if has_dxf and not has_pdf:
-            # VISUALIZAÇÃO DXF: Colunas específicas, valores centrados, ordenar por número
-            df_display = df[['TIPO', 'Num. Desenho', '1ª Emissão', 'Revisão', 'Data']].copy()
-            df_display = df_display.sort_values(by='Num. Desenho')
-            
-            st.dataframe(
-                df_display,
-                use_container_width=True,
-                column_config={
-                    "TIPO": st.column_config.TextColumn("TIPO", width="medium"),
-                    "Num. Desenho": st.column_config.TextColumn("Número de Desenho", width="medium"),
-                    "1ª Emissão": st.column_config.TextColumn("1ª Emissão", width="small"),
-                    "Revisão": st.column_config.TextColumn("Revisão", width="small"),
-                    "Data": st.column_config.TextColumn("Data Revisão", width="small")
-                },
-                hide_index=True
-            )
-        elif has_pdf and not has_dxf:
-            # VISUALIZAÇÃO PDF: Layout original (todas as colunas exceto _source)
-            df_display = df.drop(columns=['_source'], errors='ignore')
-            st.dataframe(
-                df_display, 
-                use_container_width=True,
-                column_config={"Ficheiro": st.column_config.TextColumn("Origem"), "Obs": st.column_config.TextColumn("Obs", width="small")},
-                hide_index=True
-            )
-        else:
-            # MODO MISTO: Mostrar todas as colunas (exceto _source)
-            df_display = df.drop(columns=['_source'], errors='ignore')
-            st.dataframe(
-                df_display,
-                use_container_width=True,
-                column_config={"Ficheiro": st.column_config.TextColumn("Origem"), "Obs": st.column_config.TextColumn("Obs", width="small")},
-                hide_index=True
-            )
+        # VISUALIZAÇÃO: Mostrar colunas principais na UI
+        colunas_display = ['PROJ_NUM', 'DES_NUM', 'TIPO', 'TITULO', 'DATA', 'REV_A', 'CLIENTE', 'OBRA']
+        colunas_existentes = [c for c in colunas_display if c in df.columns]
+        df_display = df[colunas_existentes].copy()
+        
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            column_config={
+                "PROJ_NUM": st.column_config.TextColumn("Projeto", width="small"),
+                "DES_NUM": st.column_config.TextColumn("Nº Desenho", width="medium"),
+                "TIPO": st.column_config.TextColumn("Tipo", width="medium"),
+                "TITULO": st.column_config.TextColumn("Título", width="large"),
+                "DATA": st.column_config.TextColumn("Data", width="small"),
+                "REV_A": st.column_config.TextColumn("Rev.A", width="small"),
+                "CLIENTE": st.column_config.TextColumn("Cliente", width="medium"),
+                "OBRA": st.column_config.TextColumn("Obra", width="medium")
+            },
+            hide_index=True
+        )
         
         # BOTÕES DE EXPORTAÇÃO
         st.markdown("### 📥 Exportar")
-        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        col_exp1, col_exp2 = st.columns(2)
         
         with col_exp1:
-            # Exportar XLSX
+            # Exportar XLSX com colunas normalizadas na ordem correta
             buffer_xlsx = io.BytesIO()
+            
+            # Reordenar colunas conforme COLUNAS_NORMALIZADAS
+            df_export = df.drop(columns=['_source', '_obs'], errors='ignore').copy()
+            
+            # Garantir que todas as colunas existem (preencher com vazio se não)
+            for col in COLUNAS_NORMALIZADAS:
+                if col not in df_export.columns:
+                    df_export[col] = ''
+            
+            # Reordenar para a ordem exata
+            df_export = df_export[COLUNAS_NORMALIZADAS]
+            
             with pd.ExcelWriter(buffer_xlsx, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='Lista Mestra JSJ')
+                df_export.to_excel(writer, index=False, sheet_name='Lista Mestra JSJ')
                 worksheet = writer.sheets['Lista Mestra JSJ']
-                worksheet.set_column(0, 0, 15)  # TIPO
-                worksheet.set_column(1, 1, 20)  # Num. Desenho
-                worksheet.set_column(2, 2, 40)  # Titulo
-                worksheet.set_column(3, 3, 10)  # Revisão
-                worksheet.set_column(4, 4, 12)  # Data
-                worksheet.set_column(5, 5, 30)  # Ficheiro
-                worksheet.set_column(6, 6, 25)  # Obs
+                # Ajustar larguras de colunas
+                for idx, col in enumerate(COLUNAS_NORMALIZADAS):
+                    max_len = max(df_export[col].astype(str).map(len).max(), len(col)) + 2
+                    worksheet.set_column(idx, idx, min(max_len, 40))
             
             st.download_button(
                 "📊 Descarregar XLSX",
                 data=buffer_xlsx.getvalue(),
                 file_name="lista_desenhos_jsj.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="Excel com 34 colunas normalizadas na ordem correta"
             )
         
         with col_exp2:
-            # Exportar Markdown
-            md_content = "# Lista de Desenhos JSJ\n\n"
+            # Exportar CSV com colunas normalizadas
+            csv_buffer = io.StringIO()
             
-            # Agrupar por TIPO
-            for tipo in df['TIPO'].unique():
-                df_tipo = df[df['TIPO'] == tipo]
-                md_content += f"## {tipo}\n\n"
-                md_content += "| Num. Desenho | Título | Rev | Data | Ficheiro | Obs |\n"
-                md_content += "|--------------|--------|-----|------|----------|-----|\n"
-                
-                for _, row in df_tipo.iterrows():
-                    md_content += f"| {row['Num. Desenho']} | {row['Titulo']} | {row['Revisão']} | {row['Data']} | {row['Ficheiro']} | {row['Obs']} |\n"
-                
-                md_content += "\n"
+            # Usar o mesmo df_export já preparado
+            df_csv = df.drop(columns=['_source', '_obs'], errors='ignore').copy()
+            for col in COLUNAS_NORMALIZADAS:
+                if col not in df_csv.columns:
+                    df_csv[col] = ''
+            df_csv = df_csv[COLUNAS_NORMALIZADAS]
+            
+            df_csv.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8-sig')
             
             st.download_button(
-                "📝 Descarregar MD",
-                data=md_content,
-                file_name="lista_desenhos_jsj.md",
-                mime="text/markdown"
-            )
-        
-        with col_exp3:
-            # Exportar PDF
-            pdf_buffer = create_pdf_export(df)
-            
-            st.download_button(
-                "📄 Descarregar PDF",
-                data=pdf_buffer.getvalue(),
-                file_name="lista_desenhos_jsj.pdf",
-                mime="application/pdf"
+                "📋 Descarregar CSV",
+                data=csv_buffer.getvalue(),
+                file_name="lista_desenhos_jsj.csv",
+                mime="text/csv",
+                help="CSV com 34 colunas normalizadas na ordem correta"
             )
     else:
         st.info("Define um 'Tipo' e carrega ficheiros.")
