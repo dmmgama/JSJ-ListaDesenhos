@@ -155,10 +155,8 @@ if 'global_fields' not in st.session_state:
         'PROJ_NOME': '',
         'FASE_PFIX': '',
         'EMISSAO': '',
-        'LAYOUT': '',
         'ELEMENTO': '',
-        'DWG_SOURCE': '',
-        'ID_CAD': ''
+        'DWG_SOURCE': ''
     }
 
 # Lista de colunas normalizadas (ordem exata para exportação)
@@ -904,12 +902,6 @@ with col_input:
                 help="Número da emissão"
             )
         with col_g2:
-            st.session_state.global_fields['LAYOUT'] = st.text_input(
-                "LAYOUT", 
-                value=st.session_state.global_fields.get('LAYOUT', ''),
-                placeholder="Ex: A1",
-                help="Formato do layout"
-            )
             st.session_state.global_fields['ELEMENTO'] = st.text_input(
                 "ELEMENTO", 
                 value=st.session_state.global_fields.get('ELEMENTO', ''),
@@ -921,12 +913,6 @@ with col_input:
                 value=st.session_state.global_fields.get('DWG_SOURCE', ''),
                 placeholder="Ex: projeto_v1.dwg",
                 help="Ficheiro DWG de origem"
-            )
-            st.session_state.global_fields['ID_CAD'] = st.text_input(
-                "ID_CAD", 
-                value=st.session_state.global_fields.get('ID_CAD', ''),
-                placeholder="Ex: CAD-001",
-                help="Identificador CAD"
             )
     
     st.divider()
@@ -1329,9 +1315,8 @@ with col_input:
                         # Campos extraídos
                         "DATA": data.get("primeira_emissao", "-"),
                         "PFIX": data.get("pfix", ""),
-                        # Campos globais
-                        "LAYOUT": gf.get('LAYOUT', ''),
                         # Campos extraídos
+                        "LAYOUT": data.get("layout", ""),
                         "DES_NUM": data.get("num_desenho", "N/A"),
                         "TIPO": data.get("tipo", task_data["batch_type"]),
                         # Campos globais
@@ -1354,9 +1339,9 @@ with col_input:
                         "REV_E": data.get("rev_e", ""),
                         "DATA_E": data.get("data_e", ""),
                         "DESC_E": data.get("desc_e", ""),
-                        # Campos globais
+                        # Campos extraídos/globais
                         "DWG_SOURCE": gf.get('DWG_SOURCE', ''),
-                        "ID_CAD": gf.get('ID_CAD', ''),
+                        "ID_CAD": data.get("id_cad", ""),
                         # Flag interna (não exportada)
                         "_source": "DXF"
                     }
@@ -1434,9 +1419,8 @@ with col_input:
                                 # Campos extraídos
                                 "DATA": data.get("DATA", "-"),
                                 "PFIX": pfix,
-                                # Campos globais
-                                "LAYOUT": gf.get('LAYOUT', ''),
                                 # Campos extraídos
+                                "LAYOUT": data.get("LAYOUT", ""),
                                 "DES_NUM": num_desenho,
                                 "TIPO": tipo_extraido or task_info["batch_type"],
                                 # Campos globais
@@ -1459,9 +1443,9 @@ with col_input:
                                 "REV_E": data.get("REV_E", ""),
                                 "DATA_E": data.get("DATA_E", ""),
                                 "DESC_E": data.get("DESC_E", ""),
-                                # Campos globais
+                                # Campos extraídos/globais
                                 "DWG_SOURCE": gf.get('DWG_SOURCE', ''),
-                                "ID_CAD": gf.get('ID_CAD', ''),
+                                "ID_CAD": data.get("ID_CAD", ""),
                                 # Flag interna (não exportada)
                                 "_source": "PDF"
                             }
@@ -1606,7 +1590,7 @@ with col_view:
         
         with col_exp2:
             # Exportar CSV com colunas normalizadas
-            csv_buffer = io.StringIO()
+            csv_buffer = io.BytesIO()
             
             # Usar o mesmo df_export já preparado
             df_csv = df.drop(columns=['_source', '_obs'], errors='ignore').copy()
@@ -1615,13 +1599,17 @@ with col_view:
                     df_csv[col] = ''
             df_csv = df_csv[COLUNAS_NORMALIZADAS]
             
-            df_csv.to_csv(csv_buffer, index=False, sep=';', encoding='utf-8-sig')
+            # Escrever CSV com encoding UTF-8 com BOM para Excel reconhecer caracteres especiais
+            csv_content = df_csv.to_csv(index=False, sep=';')
+            csv_buffer.write(b'\xef\xbb\xbf')  # UTF-8 BOM
+            csv_buffer.write(csv_content.encode('utf-8'))
+            csv_buffer.seek(0)
             
             st.download_button(
                 "📋 Descarregar CSV",
                 data=csv_buffer.getvalue(),
                 file_name="lista_desenhos_jsj.csv",
-                mime="text/csv",
+                mime="text/csv;charset=utf-8",
                 help="CSV com 34 colunas normalizadas na ordem correta"
             )
     else:
