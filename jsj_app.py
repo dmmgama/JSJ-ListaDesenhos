@@ -831,32 +831,42 @@ col_input, col_view = st.columns([1, 2])
 with col_input:
     st.subheader("1. Novo Lote")
     
-    # Seletor de tipo com opções predefinidas
-    tipo_preset = st.selectbox(
-        "🏷️ Tipo de Desenho",
-        [
-            "Dimensionamento",
-            "Betão Armado - Lajes",
-            "Betão Armado - Pilares",
-            "Betão Armado - Fundações",
-            "Betão Armado - Vigas",
-            "Betão Armado - Núcleos",
-            "Pré-esforço",
-            "Custom (personalizado)"
-        ],
-        index=0,
-        help="Seleciona o tipo ou escolhe 'Custom' para inserir manualmente"
+    # Toggle para usar ou não o Tipo de Desenho
+    usar_tipo_desenho = st.checkbox(
+        "🏷️ Usar Tipo de Desenho",
+        value=True,
+        help="Se desativado, o campo TIPO não será preenchido automaticamente"
     )
     
-    # Input manual se "Custom" selecionado
-    if tipo_preset == "Custom (personalizado)":
-        batch_type = st.text_input(
-            "✏️ Tipo Personalizado", 
-            placeholder="Ex: METALICA, PORMENOR...",
-            help="Insere o tipo personalizado"
+    batch_type = ""  # Valor padrão vazio
+    
+    if usar_tipo_desenho:
+        # Seletor de tipo com opções predefinidas
+        tipo_preset = st.selectbox(
+            "🏷️ Tipo de Desenho",
+            [
+                "Dimensionamento",
+                "Betão Armado - Lajes",
+                "Betão Armado - Pilares",
+                "Betão Armado - Fundações",
+                "Betão Armado - Vigas",
+                "Betão Armado - Núcleos",
+                "Pré-esforço",
+                "Custom (personalizado)"
+            ],
+            index=0,
+            help="Seleciona o tipo ou escolhe 'Custom' para inserir manualmente"
         )
-    else:
-        batch_type = tipo_preset
+        
+        # Input manual se "Custom" selecionado
+        if tipo_preset == "Custom (personalizado)":
+            batch_type = st.text_input(
+                "✏️ Tipo Personalizado", 
+                placeholder="Ex: METALICA, PORMENOR...",
+                help="Insere o tipo personalizado"
+            )
+        else:
+            batch_type = tipo_preset
     
     # Tipos de ficheiro suportados
     file_types = ["pdf", "json"]  # JSON para ficheiros LISP AutoCAD
@@ -947,9 +957,10 @@ with col_input:
     
     # Botão de processar
     # JSON não precisa de batch_type (vem dentro do JSON)
+    # Se usar_tipo_desenho está desligado, também não precisa de batch_type
     process_btn = st.button(
         "⚡ Processar Lote", 
-        disabled=(not uploaded_files or (not batch_type and file_source != "📋 JSON (LISP)"))
+        disabled=(not uploaded_files or (usar_tipo_desenho and not batch_type and file_source != "📋 JSON (LISP)"))
     )
 
     # LÓGICA DE VALIDAÇÃO DE CROP
