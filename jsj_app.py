@@ -1568,6 +1568,15 @@ with col_view:
         st.markdown("### 📥 Exportar")
         col_exp1, col_exp2 = st.columns(2)
         
+        # Obter nome base do ficheiro a partir de DWG_SOURCE
+        dwg_source = st.session_state.global_fields.get('DWG_SOURCE', '').strip()
+        if dwg_source:
+            # Remover extensão se existir
+            nome_base = dwg_source.rsplit('.', 1)[0] if '.' in dwg_source else dwg_source
+            nome_ficheiro = f"{nome_base}-LD"
+        else:
+            nome_ficheiro = "lista_desenhos_jsj"
+        
         with col_exp1:
             # Exportar XLSX com colunas normalizadas na ordem correta
             buffer_xlsx = io.BytesIO()
@@ -1594,7 +1603,7 @@ with col_view:
             st.download_button(
                 "📊 Descarregar XLSX",
                 data=buffer_xlsx.getvalue(),
-                file_name="lista_desenhos_jsj.xlsx",
+                file_name=f"{nome_ficheiro}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 help="Excel com 34 colunas normalizadas na ordem correta"
             )
@@ -1619,7 +1628,7 @@ with col_view:
             st.download_button(
                 "📋 Descarregar CSV",
                 data=csv_buffer.getvalue(),
-                file_name="lista_desenhos_jsj.csv",
+                file_name=f"{nome_ficheiro}.csv",
                 mime="text/csv;charset=utf-8",
                 help="CSV com 34 colunas normalizadas na ordem correta"
             )
