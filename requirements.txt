@@ -1,28 +1,29 @@
 # JSJ Parser - Gestor de Desenhos Técnicos
 # Versões pinadas para reprodutibilidade
 
-# Core Framework
+# === CORE FRAMEWORK ===
 streamlit==1.31.1
 
-# PDF Processing
+# === PDF PROCESSING ===
 pymupdf==1.23.26
 
-# Data Processing
+# === DATA PROCESSING ===
 pandas==2.1.4
 
-# Excel Export
+# === EXCEL EXPORT ===
 xlsxwriter==3.1.9
 
-# Google Gemini AI
+# === GOOGLE GEMINI AI ===
 google-generativeai==0.3.2
 
-# Image Processing
+# === IMAGE PROCESSING ===
 pillow==10.2.0
 
-# PDF Export
+# === PDF EXPORT ===
 reportlab==4.0.9
 
-# Optional: CAD File Support (DWG/DXF)
-# Descomenta as linhas abaixo se precisares de suporte DWG/DXF
-# ezdxf==1.1.4
-# matplotlib==3.8.2
+# === CAD FILE SUPPORT (DWG/DXF) ===
+# Necessário para processar ficheiros DWG/DXF nativamente
+# Sem estas dependências, apenas PDF e JSON funcionam
+ezdxf==1.1.4
+matplotlib==3.8.2

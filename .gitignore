@@ -1,34 +1,47 @@
-# Ambientes Virtuais
+# === AMBIENTES VIRTUAIS ===
 venv/
 env/
 .env
+.venv/
 
-# Python Cache
+# === PYTHON CACHE ===
 __pycache__/
 *.py[cod]
+*$py.class
+*.pyo
+.Python
 
-# Sistema
+# === SISTEMA ===
 .DS_Store
+Thumbs.db
+desktop.ini
 
-# Ficheiros de trabalho/teste
+# === LOGS ===
+*.log
+
+# === FICHEIROS DE TRABALHO/TESTE ===
 FicheirosTrabalho/
 *.dwg
 *.dxf
-*.log
 *.jsj.json
 ~$*.xlsx
-.claude/
+*.tmp
 
-# Streamlit
+# === IDE / EDITOR ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === STREAMLIT ===
 .streamlit/secrets.toml
 
-# Ficheiros de trabalho/teste
-JSJ-ListaDesenhos-ContextPack-v1.md
-check_api.py
-FicheirosTrabalho/
-ContextPack Claude Desktop Project/
-*.dwg
-*.dxf
-*.log
-~$*.xlsx
+# === CLAUDE / AI TOOLS ===
 .claude/
+ContextPack*/
+*-ContextPack*.md
+
+# === BUILDS / DIST ===
+build/
+dist/
+*.egg-info/

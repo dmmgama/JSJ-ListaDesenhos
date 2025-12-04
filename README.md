@@ -1,104 +1,91 @@
 # JSJ Extração de Legendas
 
-Aplicação Streamlit para extração automática de dados de legendas de desenhos técnicos (PDF, DXF, DWG, JSON).
+Aplicação Streamlit para extração automática de dados de legendas de desenhos técnicos.
 
 ## 🎯 O que faz
 
-- **Extrai dados de legendas** de desenhos técnicos usando IA (Google Gemini)
-- **Suporta múltiplos formatos**: PDF, DXF, DWG, JSON (exportado de AutoCAD via LISP)
-- **Exporta para CSV/XLSX** com 34 colunas normalizadas
-- **Campos globais**: Preenche automaticamente dados do projeto em todas as linhas
+Extrai metadados de legendas de desenhos técnicos de engenharia civil (JSJ - Sistemas Estruturais) e exporta para CSV/XLSX normalizado com 34 colunas.
 
-## 📋 Requisitos do Sistema
+**Fontes de dados suportadas:**
+- **PDF** → Análise via Google Gemini (OCR + IA)
+- **JSON** → Exportado de AutoCAD via LISP (zero custo API)
+- **DWG/DXF** → Extração nativa de blocos LEGENDA_JSJ_V1 ou fallback Gemini
 
-- **Python 3.10+** (recomendado 3.11 ou 3.12)
-- **Google Gemini API Key** (obter em https://aistudio.google.com/app/apikey)
-- **Windows 10/11** (testado)
+---
+
+## 📋 Requisitos
+
+| Requisito | Versão | Notas |
+|-----------|--------|-------|
+| Python | 3.10+ | Recomendado 3.11/3.12 |
+| OS | Windows 10/11 | Testado |
+| Google Gemini API Key | - | [Obter aqui](https://aistudio.google.com/app/apikey) |
+
+---
 
 ## 🚀 Instalação
 
-### 1. Clonar ou copiar a pasta
-
-```bash
-# Se usar git:
-git clone https://github.com/dmmgama/JSJ-ListaDesenhos.git
-cd JSJ-ListaDesenhos
-
-# Ou simplesmente copiar a pasta JSJ-ExtracaoLegendas para o PC
-```
-
-### 2. Criar ambiente virtual
-
 ```powershell
-# No PowerShell, dentro da pasta:
+# 1. Clonar/copiar pasta
+git clone https://github.com/seu-usuario/JSJ-LISTADESENHOS.git
+cd JSJ-LISTADESENHOS
+
+# 2. Criar e ativar venv
 python -m venv venv
-```
-
-### 3. Ativar o ambiente virtual
-
-```powershell
 .\venv\Scripts\Activate.ps1
-```
 
-### 4. Instalar dependências
-
-```powershell
+# 3. Instalar dependências
 pip install -r requirements.txt
 ```
 
-## ▶️ Como Usar
+### Suporte DWG/DXF (opcional)
 
-### 1. Ativar o ambiente virtual (se não estiver ativo)
-
+Para processar ficheiros DWG/DXF nativamente:
 ```powershell
-.\venv\Scripts\Activate.ps1
+pip install ezdxf matplotlib
 ```
 
-### 2. Executar a aplicação
+---
+
+## ▶️ Uso
 
 ```powershell
+# Ativar venv (se não estiver)
+.\venv\Scripts\Activate.ps1
+
+# Executar
 streamlit run JSJ_LEGENDAS_app.py
 ```
 
-### 3. Abrir no browser
+Abre automaticamente em `http://localhost:8501`
 
-A aplicação abre automaticamente em `http://localhost:8501`
+### Workflow básico
 
-### 4. Configurar API Key
+1. Inserir **API Key** na sidebar
+2. (Opcional) Preencher **Dados do Projeto** globais
+3. Selecionar **Tipo de Ficheiro** (PDF/JSON/DWG)
+4. Carregar ficheiros
+5. **Processar Lote**
+6. **Exportar** XLSX ou CSV
 
-- Na barra lateral, inserir a **Google Gemini API Key**
-- Ativar **Modo TURBO** se tiver conta Google Cloud paga
+---
 
-### 5. Processar desenhos
-
-1. Preencher os **Dados do Projeto** (opcional - aplicados a todas as linhas)
-2. Selecionar o **Tipo de Ficheiro** (PDF, JSON, DWG/DXF)
-3. Carregar os ficheiros
-4. Clicar em **⚡ Processar Lote**
-5. Exportar para **XLSX** ou **CSV**
-
-## 📁 Estrutura de Ficheiros
+## 📁 Estrutura do Projeto
 
 ```
-JSJ-ExtracaoLegendas/
-├── JSJ_LEGENDAS_app.py   # Aplicação principal
+JSJ-LISTADESENHOS/
+├── JSJ_LEGENDAS_app.py   # Aplicação principal (único ponto de entrada)
 ├── requirements.txt      # Dependências Python
 ├── README.md             # Este ficheiro
-├── .gitignore            # Ficheiros ignorados pelo git
-└── venv/                 # Ambiente virtual (criado localmente)
+├── ARCHITECTURE.md       # Documentação técnica para devs/LLMs
+├── CHANGELOG.md          # Histórico de versões
+├── .gitignore            # Ficheiros ignorados
+└── venv/                 # Ambiente virtual (local, não versionado)
 ```
 
-## 🔧 Dependências Principais
+---
 
-- `streamlit` - Interface web
-- `google-generativeai` - API Google Gemini
-- `pandas` - Manipulação de dados
-- `PyMuPDF (fitz)` - Leitura de PDFs
-- `ezdxf` - Leitura de DXF/DWG
-- `xlsxwriter` - Exportação Excel
-- `reportlab` - Geração de PDFs
-
-## 📊 Colunas Exportadas (34)
+## 📊 Schema de Output (34 colunas)
 
 ```
 PROJ_NUM, PROJ_NOME, CLIENTE, OBRA, LOCALIZACAO, ESPECIALIDADE,
@@ -108,12 +95,43 @@ REV_B, DATA_B, DESC_B, REV_C, DATA_C, DESC_C, REV_D,
 DATA_D, DESC_D, REV_E, DATA_E, DESC_E, DWG_SOURCE, ID_CAD
 ```
 
-## ⚠️ Notas
+---
 
-- O ficheiro exportado tem o nome `{DWG_SOURCE}-LD.xlsx` ou `{DWG_SOURCE}-LD.csv`
-- Se DWG_SOURCE estiver vazio, usa `lista_desenhos_jsj` como nome
-- A API Gemini tem limites de uso (15 req/min no free tier, 1000 req/min no paid tier)
+## ⚙️ Modos de Operação
 
-## 📝 Licença
+| Modo | Rate Limit | Batch Size | Requisito |
+|------|------------|------------|-----------|
+| Standard | 15 req/min | 5 | Free tier Gemini |
+| TURBO | 1000 req/min | 50 | Conta Google Cloud paga |
+
+---
+
+## 🔧 Configuração Avançada
+
+### Área de Crop (PDFs)
+
+A sidebar permite configurar que região da página é analisada:
+- `Canto Inf. Direito (50%)` — Padrão, legendas típicas
+- `Canto Inf. Direito (30-70%)` — Ajuste fino
+- `Metade Inferior` — Legendas largas
+- `Página Inteira` — Fallback
+
+### Ficheiros JSON (LISP AutoCAD)
+
+Suporta dois formatos:
+1. **Array direto**: `[{atributos: {...}}, ...]`
+2. **Wrapper**: `{desenhos: [...], metadata: {...}}`
+
+---
+
+## 📝 Notas
+
+- Ficheiro exportado: `{DWG_SOURCE}-LD.xlsx` ou `lista_desenhos_jsj.xlsx`
+- Logs em `jsj_parser.log`
+- Encoding CSV: UTF-8 com BOM (compatível Excel PT)
+
+---
+
+## 📄 Licença
 
 Uso interno JSJ Engenharia.
